@@ -95,7 +95,7 @@ class AD5933:
         self.__inc_freq = int(increment)
 
     def set_settle_cycles(self, cycles):
-        # self.settle_cycles.write(cycles)  # TODO: Decide what to do about this
+        self.settle_cycles.write(cycles)  # TODO: Decide what to do about this
         self.__settle_cycles = cycles
 
     def get_settle_cycles(self):
