@@ -1,0 +1,24 @@
+Controls
+    * List of sweeps
+        - Edit pane
+        - Start frequency
+        - Interval
+        - Count
+        - [Final frequency]
+        - Add button
+    * Sweep timing
+        - Interval
+        - (Scheduled start)
+        - (Scheduled stop)
+        - [Time to next sweep]
+    * Log file location
+    * Current status
+    * START
+    * STOP
+
+Tabs
+    * Enable/disable
+    * Devices
+        - Graph
+        - Enable/disable
+        - Name
