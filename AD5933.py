@@ -32,8 +32,7 @@ class AD5933:
         def read_signed(self):
             result = 0
             for i in range(0, self.size):
-                result |= (self.bus.read_byte_data(self.device_address, self.address + i) << (
-                            (self.size - (i + 1)) * 8))
+                result |= (self.bus.read_byte_data(self.device_address, self.address + i) << ((self.size - (i+1)) * 8))
 
             if result & (2 ** ((8 * self.size) - 1)):  # if sign bit is set
                 result -= 2 ** (8 * self.size)  # compute negative value

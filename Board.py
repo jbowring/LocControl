@@ -6,7 +6,14 @@ import numpy
 import pigpio
 from scipy.interpolate import griddata
 import struct
+from datetime import datetime
 
+
+class QuitNow(InterruptedError):
+    """raise this when board operation has been ordered to stop"""
+
+class PortDisconnectedError(ConnectionError):
+    """raise when access to a disconnected port is requested"""
 
 class Board:
     __gpio = pigpio.pi()
@@ -23,22 +30,28 @@ class Board:
         Board.__gpio.write(4, 1)
         Board.reset()
 
-        self.address = address
+        self.__address = address
         self.__bus = SMBus(i2c_port)
         self.select()
         self.ad5933 = AD5933(self.__bus)
         self.ad5933.set_settle_cycles(100)  # TODO: Decide final value
-        self.mux = self.Mux(self.__bus)
+        self.mux = self.Mux(self.__bus, address)
         self.eeprom = self.Eeprom(self.__bus)
 
-        # TODO: Get calibration from eeprom
         self.interp_1x = self.CalibrationConstants()
         self.interp_5x = self.CalibrationConstants()
 
         self.interp2d_1x = None
         self.interp2d_5x = None
 
-    def load_calibration_constants(self, cal_1x, cal_5x):
+        self.quit_now = False
+
+    def address(self):
+        return self.__address
+
+    def load_calibration_constants(self):
+        calibration_constants = self.eeprom.read_calibration_constants()
+        cal_1x, cal_5x = calibration_constants[1], calibration_constants[5]
         for is_1x in (True, False):
             phase_offset_frequencies = []
             phase_offsets = []
@@ -74,22 +87,38 @@ class Board:
 
     def select(self):
         Board.reset()
-        self.__bus.i2c_rdwr(i2c_msg.write(0x70 + self.address, [0xff]))
+        self.__bus.i2c_rdwr(i2c_msg.write(0x70 + self.__address, [0xf0]))
 
     def deselect(self):
-        self.__bus.i2c_rdwr(i2c_msg.write(0x70 + self.address, [0x00]))
+        self.__bus.i2c_rdwr(i2c_msg.write(0x70 + self.__address, [0x00]))
 
     class Mux:
-        def __init__(self, bus):
-            self.__bus = bus
-            self.port1 = self.Port(1)
-            self.port2 = self.Port(2)
-            self.port3 = self.Port(3)
-            self.port4 = self.Port(4)
-
         class Port:
+            class Channel:
+                class Terminal:
+                    def __init__(self, port, channel, is_reference):
+                        self.port = port
+                        self.channel = channel
+                        self.is_reference = is_reference
+
+                def __init__(self, port, channel):
+                    self.enabled = True
+                    self.impedance = self.Terminal(port, channel, False)
+                    self.reference = self.Terminal(port, channel, True)
+                    self.__current = 0
+
+                def __iter__(self):
+                    return iter([self.impedance, self.reference])
+
+                # def __next__(self):
+                #     if self.__current == 2:
+                #         raise StopIteration
+                #     self.__current += 1
+                #     return self.impedance if self.__current == 1 else self.reference
+
             def __init__(self, port):
                 self.enabled = True
+                self.__port = port
                 self.channel1 = self.Channel(port, 1)
                 self.channel2 = self.Channel(port, 2)
                 self.channel3 = self.Channel(port, 3)
@@ -98,20 +127,48 @@ class Board:
                 self.channel6 = self.Channel(port, 6)
                 self.channel7 = self.Channel(port, 7)
                 self.channel8 = self.Channel(port, 8)
+                self.__current = 0
 
-            class Channel:
-                def __init__(self, port, channel):
-                    self.enabled = True
-                    self.impedance = self.Terminal(port, channel, False)
-                    self.reference = self.Terminal(port, channel, True)
+            def __iter__(self):
+                return iter([
+                    self.channel1,
+                    self.channel2,
+                    self.channel3,
+                    self.channel4,
+                    self.channel5,
+                    self.channel6,
+                    self.channel7,
+                    self.channel8
+                ])
 
-                class Terminal:
-                    def __init__(self, port, channel, is_reference):
-                        self.port = port
-                        self.channel = channel
-                        self.is_reference = is_reference
+            # def __next__(self):
+            #     if self.__current == 8:
+            #         raise StopIteration
+            #     else:
+            #         self.__current += 1
+            #         return self.Channel(self.__port, self.__current)
 
-        def select(self, terminal):
+        port1 = Port(1)
+        port2 = Port(2)
+        port3 = Port(3)
+        port4 = Port(4)
+
+        def __iter__(self):
+            return iter([self.port1, self.port2, self.port3, self.port4])
+
+        # def __next__(self):
+        #     if self.__current == 4:
+        #         raise StopIteration
+        #     self.__current += 1
+        #     return self.Port(self.__current)
+
+        def __init__(self, bus, board_address):
+            self.__bus = bus
+            self.__board_address = board_address
+            self.__current = 0
+            self.__selected = None
+
+        def _select_legacy(self, terminal):
             print('Selecting {0} terminal on port {1} on channel {2}'.format(
                 'reference' if terminal.is_reference else 'impedance', terminal.port, terminal.channel))
             port = terminal.port - 1
@@ -124,56 +181,153 @@ class Board:
             # print('{:08b}'.format(data))
             self.__bus.i2c_rdwr(i2c_msg.write(0x44 + port, [data]))
 
+        def select(self, terminal):
+            self.__selected = None
+
+            print('Selecting {0} terminal on port {1} on channel {2}'.format(
+                'reference' if terminal.is_reference else 'impedance', terminal.port, terminal.channel))
+
+            # select i2c channel 4 to talk to master mux
+            self.__bus.i2c_rdwr(i2c_msg.write(0x70 + self.__board_address, [0xf1]))
+
+            # select port on master mux
+            self.__bus.i2c_rdwr(i2c_msg.write(0x44, [0b10001000 >> (terminal.port - 1)]))
+
+            # calculate pair index of each half-mux (0-3)
+            pair = (((terminal.channel - 1) * 2) + (1 if terminal.is_reference else 0)) % 4
+
+            if terminal.channel in [1, 2, 5, 6]:
+                data = 0b00001000 >> pair
+            else:
+                data = 0b00010000 << pair
+
+            # select i2c channel to talk to slave muxes
+            self.__bus.i2c_rdwr(i2c_msg.write(0x70 + self.__board_address, [(0b10000 >> terminal.port) | 0xf0]))
+
+            try:
+                # select channels on slave muxes
+                self.__bus.i2c_rdwr(i2c_msg.write(0x46, [data if 1 <= terminal.channel <= 4 else 0b00000000]))
+                self.__bus.i2c_rdwr(i2c_msg.write(0x47, [data if 5 <= terminal.channel <= 8 else 0b00000000]))
+            except OSError:
+                raise PortDisconnectedError(121, 'Board {0}, port {1} breakout board is not connected'.format(self.__board_address, terminal.port))
+
+            self.__selected = terminal
+
+        def selected(self):
+            return self.__selected
+
     class Eeprom:
         def __init__(self, bus):
             self.__bus = bus
 
+        def write_calibration_constants(self, gain_ranges: dict):
+            self.__write(0x0000, self._encode(gain_ranges))
+            assert self.read_calibration_constants() == gain_ranges, 'Calibration constants read check failed!'
+
+        def read_calibration_constants(self):
+            return self._decode(self.__read(0x0000, 65535))
+
         @staticmethod
-        def _encode(data: dict):
-            output = bytearray()
-            for frequency, pairs in data.items():
-                output.extend(struct.pack('d', frequency))
-                for key, value in pairs.items():
-                    output.extend(struct.pack('d', key))
-                    output.extend(struct.pack('d', value))
+        def _encode(gain_ranges: dict):
+            first = lambda d : d[list(d.keys())[0]]
+
+            for gain_range in gain_ranges.values():
+                # assert all frequencies in all ranges are equal
+                assert gain_range.keys() == first(gain_ranges).keys()
+                # assert phase offset (i.e. key 0.0) exists in all dictionaries in all ranges
+                assert all(0.0 in freq_dict for freq_dict in gain_range.values())
+                # assert all dictionaries within a gain range are of equal size
+                assert len(set(len(freq_dict) for freq_dict in gain_range.values())) == 1
+
+            # assert all gain range keywords are 4-byte integers
+            assert all(1 <= int(keyword) <= 2**32 for keyword in gain_ranges.keys())
+            # assert all gain range keywords are unique
+            assert len(set(int(keyword) for keyword in gain_ranges.keys())) == len(gain_ranges.keys())
+
+            start_freq = sorted(first(gain_ranges).keys())[0]
+            increment_freq = sorted(first(gain_ranges).keys())[1] - start_freq
+            count = len(first(gain_ranges))
+
+            output = bytearray(struct.pack('iii', int(start_freq), int(increment_freq), int(count)))
+
+            # pack pairs of range number and calibration resistor count
+            for keyword, data in sorted(gain_ranges.items()):
+                output.extend(struct.pack('ii', int(keyword), int(len(first(data)) - 1)))
+
+            # four-byte break
+            output.extend(struct.pack('i', 0))
+
+            # put phase offset (mag 0.0) constant first, then pairs of magnitude and gain factor
+            for _, data in sorted(gain_ranges.items()):
+                for _, pairs in sorted(data.items()):
+                    output.extend(struct.pack('d', pairs[0.0]))
+                    for mag, gf in pairs.items():
+                        if mag != 0.0:
+                            output.extend(struct.pack('dd', mag, gf))
+
+            # check output not too big for EEPROM
+            print(len(output))
+            assert len(output) <= 2**16
             return output
 
         @staticmethod
-        def _decode(data: bytearray, num_pairs):
+        def _decode(data: bytearray):
+            start_freq, increment_freq, count = struct.unpack_from('iii', data)
+            frequencies = range(start_freq, start_freq + (increment_freq * count), increment_freq)
+
+            sizes = {}
+            for i in range(12, len(data), 8):
+                # four-byte break
+                if struct.unpack_from('i', data, i)[0] == 0:
+                    # skip over it
+                    i += 4
+                    break
+                sizes.update((struct.unpack_from('ii', data, i), ))
+
             output = {}
-            for i in range(0, len(data), 8 + (num_pairs * 16)):
-                frequency = int(struct.unpack_from('d', data, i)[0])
-                output[frequency] = {}
-                for j in range(i + 8, (i + 8) + (num_pairs * 16), 16):
-                    try:
-                        output[frequency].update((struct.unpack_from('dd', data, j), ))
-                    except struct.error:
-                        break
+            for name, size in sorted(sizes.items()):
+                output[name] = {}
+                for frequency in frequencies:
+                    # noinspection PyUnboundLocalVariable
+                    output[name][frequency] = {0.0: struct.unpack_from('d', data, i)[0]}
+                    for i in range(i + 8, i + (size * 2 * 8), 16):
+                        output[name][frequency].update((struct.unpack_from('dd', data, i), ))
+                    i += 16
+
             return output
 
-    # def calibrate_1x(self, port: Mux.Port):
-    #     cal_resistors = {
-    #         100: port.channel1.impedance,
-    #         220: port.channel2.impedance,
-    #         499: port.channel3.impedance
-    #     }
-    #
-    #     self.ad5933.set_pga_multiplier(False)
-    #     self.cal_magnitudes_1x = self._calibrate(cal_resistors)
-    #
-    # def calibrate_5x(self, port: Mux.Port):
-    #     cal_resistors = {
-    #         499: port.channel3.impedance,
-    #         1000: port.channel4.impedance,
-    #         3300: port.channel1.reference,
-    #         6800: port.channel5.impedance,
-    #         10000: port.channel5.reference
-    #     }
-    #
-    #     self.ad5933.set_pga_multiplier(True)
-    #     self.cal_magnitudes_5x = self._calibrate(cal_resistors)
+        def __write(self, start_address, data: bytes):
+            assert 0x0000 <= start_address <= 0xffff and start_address + len(data) - 1 <= 0xffff
+            address = start_address
+            while address - start_address < len(data):
+                self.__block_write(address, data[address-start_address:(address-start_address) + (128-(address % 128))])
+                address += (128 - (address % 128))
 
-    def calibrate_1x_sweep(self, port: Mux.Port):
+        def __read(self, address, n_bytes):
+            self.__block_write(address, bytes())
+            i = 0
+            output = bytearray()
+            while i < n_bytes:
+                increment = min(n_bytes-i, 4096)
+                read = i2c_msg.read(0x50, increment)
+                i += increment
+                self.__bus.i2c_rdwr(read)
+                output.extend(list(read))
+            return output
+
+        def __block_write(self, address, data: bytes):
+            assert 0x0000 <= address <= 0xffff and len(data) <= 128 - (address % 128)
+            self.__bus.i2c_rdwr(i2c_msg.write(0x50, [address >> 8, address & 0xff, *data]))
+            if len(data) > 0:
+                sleep(0.005)
+
+        # def block_read(self, address, n_bytes):
+        #     # self.block_write(address, bytes())
+        #     read = i2c_msg.read(0x50, n_bytes)
+        #     self.__bus.i2c_rdwr(i2c_msg.write(0x50, [address >> 8, address & 0xff]), read)
+        #     return list(read)
+
+    def _calibrate_1x_sweep_legacy(self, port: Mux.Port):
         cal_resistors = {
             100: port.channel1.impedance,
             220: port.channel2.impedance,
@@ -181,9 +335,9 @@ class Board:
         }
 
         self.ad5933.set_pga_multiplier(False)
-        return self._calibrate_sweep(cal_resistors)
+        return self._calibrate_sweep_legacy(cal_resistors)
 
-    def calibrate_5x_sweep(self, port: Mux.Port):
+    def _calibrate_5x_sweep_legacy(self, port: Mux.Port):
         cal_resistors = {
             499: port.channel3.impedance,
             1000: port.channel4.impedance,
@@ -193,79 +347,16 @@ class Board:
         }
 
         self.ad5933.set_pga_multiplier(True)
-        return self._calibrate_sweep(cal_resistors)
+        return self._calibrate_sweep_legacy(cal_resistors)
 
-    # def _calibrate(self, cal_resistors):
-    #     calibrated_magnitudes = {}
-    #     calibrated_magnitudes_with_res = {}
-    #
-    #     for cal_res, cal_port in sorted(cal_resistors.items()):
-    #         self.mux.select(cal_port)
-    #         real = []
-    #         imag = []
-    #         for i in range(0, 100):
-    #             self.ad5933.start_output()
-    #             self.ad5933.start_sweep()
-    #
-    #             sleep(0.1)
-    #             while not self.ad5933.data_ready():
-    #                 sleep(0.1)
-    #
-    #             real.append(self.ad5933.real_data.read_signed())
-    #             imag.append(self.ad5933.imag_data.read_signed())
-    #             self.ad5933.repeat_freq()
-    #
-    #         real = sum(real) / len(real)
-    #         imag = sum(imag) / len(imag)
-    #         phase = atan(imag / real) * 360 / (2 * pi)
-    #         magnitude = sqrt((real ** 2) + (imag ** 2))
-    #         gain_factor = (5 if self.ad5933.get_pga_multiplier() else 1) / (cal_res * magnitude)
-    #
-    #         calibrated_magnitudes[magnitude] = gain_factor
-    #         calibrated_magnitudes_with_res[magnitude] = {cal_res, gain_factor}
-    #         print(gain_factor)
-    #         print(phase)
-    #
-    #     return calibrated_magnitudes, calibrated_magnitudes_with_res
-
-    # def _calibrate(self, cal_resistors):
-    #     calibrated_magnitudes = {}
-    #     calibrated_magnitudes_with_res = {}
-    #
-    #     self.ad5933.set_start_increment_steps(start=4960, increment=198, steps=500)
-    #     self.ad5933.start_output()
-    #     self.ad5933.start_sweep()
-    #
-    #     for cal_res, cal_port in sorted(cal_resistors.items()):
-    #         self.mux.select(cal_port)
-    #         magnitudes = []
-    #         phases = []
-    #
-    #         for i in range(0, 10):
-    #             (magnitude, phase) = self.get_measurement()
-    #             magnitudes.append(magnitude)
-    #             phases.append(phase)
-    #
-    #         magnitude = sum(magnitudes) / len(magnitudes)
-    #         phase = sum(phases) / len(phases)
-    #
-    #         gain_factor = (5 if self.ad5933.get_pga_multiplier() else 1) / (cal_res * magnitude)
-    #
-    #         calibrated_magnitudes[magnitude] = gain_factor
-    #         calibrated_magnitudes_with_res[magnitude] = {cal_res, gain_factor}
-    #         print(cal_res)
-    #         print(gain_factor)
-    #         print(phase)
-    #
-    #     return calibrated_magnitudes  # , calibrated_magnitudes_with_res
-
-    def _calibrate_sweep(self, cal_resistors):
+    def _calibrate_sweep_legacy(self, cal_resistors):
         calibrated = {}
 
         for cal_res, cal_port in sorted(cal_resistors.items()):
-            self.mux.select(cal_port)
+            # noinspection PyProtectedMember
+            self.mux._select_legacy(cal_port)
 
-            sweep = self.sweep_raw(start=1000, increment=198, steps=500, repeats=100)
+            sweep = self.sweep_raw(start=1000, increment=396, steps=250, repeats=10)  # REVERT: 500 steps, 100 repeats
 
             if len(calibrated) == 0:
                 for freq in sweep.keys():
@@ -279,6 +370,52 @@ class Board:
                     calibrated[freq][0.0] = phase
 
         return calibrated
+
+    def calibrate_1x_sweep(self, port: Mux.Port):
+        cal_resistors = {
+            100: port.channel1.impedance,
+            220: port.channel1.reference,
+            499: port.channel2.impedance
+        }
+
+        self.ad5933.set_pga_multiplier(False)
+        return self._calibrate_sweep(cal_resistors)
+
+    def calibrate_5x_sweep(self, port: Mux.Port):
+        cal_resistors = {
+            499: port.channel2.impedance,
+            1000: port.channel2.reference,
+            3300: port.channel3.impedance,
+            6800: port.channel3.reference,
+            10000: port.channel4.impedance
+        }
+
+        self.ad5933.set_pga_multiplier(True)
+        return self._calibrate_sweep(cal_resistors)
+
+    def _calibrate_sweep(self, cal_resistors):
+        calibrated = {}
+
+        for cal_res, cal_port in sorted(cal_resistors.items()):
+            self.mux.select(cal_port)
+
+            sweep = self.sweep_raw(start=1000, increment=220, steps=450, repeats=100)  # REVERT: 450 steps, 100 repeats
+
+            if len(calibrated) == 0:
+                for freq in sweep.keys():
+                    calibrated[freq] = {}
+
+            for (freq, (magnitude, phase)) in sweep.items():
+                calibrated[freq][magnitude] = 1 / (cal_res * magnitude)
+
+            if cal_res == sorted(cal_resistors.keys())[len(cal_resistors) // 2]:
+                for (freq, (magnitude, phase)) in sweep.items():
+                    calibrated[freq][0.0] = phase
+
+        return calibrated
+
+    def calibrate(self, port):
+        self.eeprom.write_calibration_constants({1: self.calibrate_1x_sweep(port), 5: self.calibrate_5x_sweep(port)})
 
     # def print_impedance_loop(self, calibrated_magnitudes, phase_offset, do_sleep=True, sleep_time=0.1):
     #     self.ad5933.start_output()
@@ -462,10 +599,15 @@ class Board:
         real = []
         imag = []
 
-        sleep_time = (32 * 1024 / self.ad5933.clock()) + (self.ad5933.get_settle_cycles() / self.ad5933.output_freq())
+        # sleep(3)  # REVERT: Remove
+
+        # REVERT:    (32 * 1024 / ...
+        sleep_time = (16 * 1024 / self.ad5933.clock()) + (self.ad5933.get_settle_cycles() / self.ad5933.output_freq())
 
         timeouts = 0
         while len(real) < repeats:
+            if self.quit_now:
+                raise QuitNow('Board {0} quitting'.format(self.__address))
             sleep(sleep_time)
             if self.ad5933.data_ready():
                 real.append(self.ad5933.real_data.read_signed())
@@ -486,10 +628,25 @@ class Board:
         real = sum(real) / len(real)
         imag = sum(imag) / len(imag)
 
+        # REVERT: remove
+        self.real.append(real)
+        self.imag.append(imag)
+
         try:
             phase = atan(imag / real)
         except ZeroDivisionError:
             phase = atan(imag * float('Inf'))
+
+        if real < 0:
+            phase += pi
+        elif imag < 0:
+            phase += 2*pi
+
+        # if real < 0:
+            # if imag > 0:
+            #     phase += pi
+            # if imag < 0:
+            #     phase -= pi
 
         phase *= 360 / (2 * pi)
         magnitude = sqrt((real ** 2) + (imag ** 2))
@@ -571,7 +728,9 @@ class Board:
     #     return results
 
     def sweep(self, start, increment, steps, repeats=10):
+        then = datetime.now()
         assert(1000 <= start <= 100000 and increment >= 0 and 0 <= steps <= 511)
+
         self.ad5933.set_pga_multiplier(False)
         results_1x = self.sweep_raw(start, increment, steps, repeats)
         self.ad5933.set_pga_multiplier(True)
@@ -581,10 +740,15 @@ class Board:
         for (frequency, pair_1x), (_, pair_5x) in zip(sorted(results_1x.items()), sorted(results_5x.items())):
             results[frequency] = (pair_1x, pair_5x)
 
+        print('Sweep duration: ',  datetime.now() - then)
         return self.adjust(results)
 
     def sweep_raw(self, start, increment, steps, repeats):
         assert(1000 <= start <= 100000 and increment >= 0 and 0 <= steps <= 511)
+        # REVERT: remove
+        self.real = []
+        self.imag = []
+
         ext_limit = 11999
         int_start = start
         int_steps = steps
@@ -593,10 +757,11 @@ class Board:
             self.ad5933.set_external_oscillator(True)
             ext_steps = min(steps, (ext_limit - start) // increment)
             self.ad5933.set_start_increment_steps(start, increment, ext_steps)
+            # print('External: {0} + {1} * {2}'.format(start, increment, ext_steps))  # REVERT: remove
             self.ad5933.start_output()
             self.ad5933.start_sweep()
             results[self.ad5933.output_freq()] = self.get_measurement(repeats=repeats)
-            while not self.ad5933.sweep_complete():
+            while not self.ad5933.sweep_complete() and ext_steps != 0:
                 self.ad5933.increment_freq()
                 results[self.ad5933.output_freq()] = self.get_measurement(repeats=repeats)
             self.ad5933.reset()
@@ -606,10 +771,11 @@ class Board:
         if (start + (increment * steps)) > ext_limit:
             self.ad5933.set_external_oscillator(False)
             self.ad5933.set_start_increment_steps(int_start, increment, int_steps)
+            # print('Internal: {0} + {1} * {2}'.format(int_start, increment, int_steps))  # REVERT: remove
             self.ad5933.start_output()
             self.ad5933.start_sweep()
             results[self.ad5933.output_freq()] = self.get_measurement(repeats=repeats)
-            while not self.ad5933.sweep_complete() and self.ad5933.output_freq() <= (100000 - increment):
+            while not self.ad5933.sweep_complete() and self.ad5933.output_freq() <= (100000 - increment) and int_steps != 0:
                 self.ad5933.increment_freq()
                 results[self.ad5933.output_freq()] = self.get_measurement(repeats=repeats)
             self.ad5933.reset()
@@ -617,6 +783,7 @@ class Board:
         return results
     
     def adjust(self, results):
+        self.magnitudes = []
         frequencies = []
         magnitudes_1x = []
         phases_1x = []
@@ -629,9 +796,7 @@ class Board:
             magnitudes_5x.append(magnitude_5x)
             phases_5x.append(phase_5x)
 
-        print((self.interp_1x.fs, self.interp_1x.ms))
-
-        gfs_1x = griddata((self.interp_1x.fs, self.interp_1x.ms), self.interp_1x.gfs, (frequencies, magnitudes_1x))
+        gfs_1x = griddata((self.interp_1x.fs, self.interp_1x.ms), self.interp_1x.gfs, (frequencies, magnitudes_1x))  # REVERT: remove nearest
         gfs_nearest = griddata((self.interp_1x.fs, self.interp_1x.ms), self.interp_1x.gfs, (frequencies, magnitudes_1x),
                                method='nearest')
         for i in range(len(gfs_1x)):
@@ -639,24 +804,49 @@ class Board:
                 gfs_1x[i] = gfs_nearest[i]
         phase_offsets_1x = griddata(self.interp_1x.po_fs, self.interp_1x.pos, frequencies)
                 
-        gfs_5x = griddata((self.interp_5x.fs, self.interp_5x.ms), self.interp_5x.gfs, (frequencies, magnitudes_5x))
+        gfs_5x = griddata((self.interp_5x.fs, self.interp_5x.ms), self.interp_5x.gfs, (frequencies, magnitudes_5x))  # REVERT: remove nearest
         gfs_nearest = griddata((self.interp_5x.fs, self.interp_5x.ms), self.interp_5x.gfs, (frequencies, magnitudes_5x),
                                method='nearest')
         for i in range(len(gfs_5x)):
             if isnan(gfs_5x[i]):
                 gfs_5x[i] = gfs_nearest[i]
-        phase_offsets_5x = griddata(self.interp_5x.po_fs, self.interp_5x.pos, frequencies)
+        phase_offsets_5x = griddata(self.interp_5x.po_fs, self.interp_5x.pos, frequencies,
+                               method='nearest')  # REVERT: remove nearest
                 
         results = {}
         for f, m_1x, gf_1x, p_1x, po_1x, m_5x, gf_5x, p_5x, po_5x in zip(frequencies, magnitudes_1x, gfs_1x, phases_1x,
                                                                          phase_offsets_1x, magnitudes_5x, gfs_5x,
                                                                          phases_5x, phase_offsets_5x):
+            m = m_1x
+            gf = gf_1x
+            debug_phase = p_1x
+            debug_phase_offset = po_1x
             impedance = 1 / (m_1x * gf_1x)
             phase = p_1x - po_1x
             if impedance > 500:
+                m = m_5x
+                gf = gf_5x
                 impedance = 1 / (m_5x * gf_5x)
                 phase = p_5x - po_5x
+                debug_phase = p_5x
+                debug_phase_offset = po_5x
 
+            phase = (-1 if phase < 0 else 1) * (abs(phase) % 180)
+            # print('Phase: {0}\t Offset: {1}\tFinal: {2}'.format(debug_phase, debug_phase_offset, phase))
             results[f] = (impedance, phase)
+            self.magnitudes.append(m)
 
         return results
+
+
+    def spi_write(self):
+        self.__spi_chip_select()
+        self.__spi_chip_deselect()
+
+    def __spi_chip_select(self):
+        self.__gpio.set_mode(2, pigpio.OUTPUT)
+        self.__gpio.write(2, 0)
+
+    def __spi_chip_deselect(self):
+        self.__gpio.write(2, 1)
+        self.__gpio.set_mode(2, pigpio.ALT0)
