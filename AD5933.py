@@ -13,8 +13,7 @@ class AD5933:
         self.enter_standby()
         self.set_pga_multiplier(False)
         self.set_external_oscillator(False)
-        self.set_settle_cycles(0)
-        self.settle_cycles.write(0)  # TODO: Also decide what to do with this
+        self.set_settle_cycles(100)
 
     class Register:
         bus = None
@@ -91,10 +90,10 @@ class AD5933:
         self.__start_freq = int(start)
         self.num_steps.write(int(steps))
         self.inc_freq.write(self.freq_code(increment))
-        self.__inc_freq = int(increment)
+        self.__inc_freq = increment
 
     def set_settle_cycles(self, cycles):
-        self.settle_cycles.write(cycles)  # TODO: Decide what to do about this
+        self.settle_cycles.write(cycles)
         self.__settle_cycles = cycles
 
     def get_settle_cycles(self):
@@ -110,6 +109,7 @@ class AD5933:
         self.control_2.set_bit(3, 1 if enable else 0)
         self.__clock = 2000000 if enable else 16776000
 
+    # clock = property(lambda self: self.__clock)
     def clock(self) -> int:
         return self.__clock
 
