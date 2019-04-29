@@ -2,6 +2,7 @@ from datetime import timedelta, datetime
 import os
 from time import sleep
 import os.path
+import sys
 from numpy import logspace
 from math import log10
 from Board import Board, QuitNow, PortDisconnectedError
@@ -16,15 +17,15 @@ from PyQt5.QtWidgets import QApplication, QCheckBox, QComboBox, QGridLayout, QGr
                             QPushButton, QTabWidget, QStyle, QVBoxLayout, QWidget, QFormLayout, QMessageBox, QFileDialog
 
 class BoardTabs(QTabWidget):
-    class BoardTab(QTabWidget):
-        class PortTab(QGroupBox):
-            class ChannelWidget(QGroupBox):
-                class TerminalLabel(QLabel):
+    class BoardTab(QTabWidget): # tab of port tabs
+        class PortTab(QGroupBox): # tab of 16 graphs
+            class ChannelWidget(QGroupBox): # pairs of graphs
+                class TerminalLabel(QLabel): # label above graphs
                     def __init__(self, *__args):
                         super().__init__(*__args)
                         self.sizePolicy().setRetainSizeWhenHidden(True)
                         self.setAlignment(Qt.AlignHCenter)
-                        board_tabs.sig_show_all_labels.connect(self.show)
+                        board_tabs.sig_show_all_labels.connect(self.show) # connect signal handler to stop being hidden
 
                     def toggle_visibility(self):
                         self.setVisible(self.isHidden())
@@ -35,6 +36,7 @@ class BoardTabs(QTabWidget):
                     self.setCheckable(True)
                     self.setChecked(True)
 
+                    # initialise graphs
                     self.impedance_graph = QSvgWidget(ROOT_DIR + 'no_data.svg')
                     self.reference_graph = QSvgWidget(ROOT_DIR + 'no_data.svg')
 
@@ -56,6 +58,8 @@ class BoardTabs(QTabWidget):
                 super().__init__('Enabled')
                 self.setCheckable(True)
                 layout = QGridLayout()
+
+                # store my ChannelWidgets
                 self.channels = {}
                 for channel in range(1, 9):
                     self.channels[channel] = self.ChannelWidget(channel)
@@ -64,26 +68,28 @@ class BoardTabs(QTabWidget):
 
                 self.setLayout(layout)
 
-            def __iter__(self):
+            def __iter__(self): # make iterable, return iterator over my ChannelWidgets
                 return iter(self.channels.values())
 
         def __init__(self, board: Board, parent=None):
             super().__init__(parent)
             self.__board = board
+
+            # store my PortTabs
             self.port_tabs = {}
             for port in range(1, 5):
                 self.port_tabs[port] = self.PortTab()
                 self.addTab(self.port_tabs[port], 'Port {0}'.format(port))
 
-        def __iter__(self):
+        def __iter__(self): # make iterable, return iterator over my PortTabs
             return iter([self.widget(i) for i in range(self.count())])
 
-        def select(self, terminal):
+        def select(self, terminal): # select board and terminal WITHOUT MUTEX!
             self.board().select()
             self.board().mux.select(terminal)
             self.blink(True, terminal)
 
-        def blink(self, blink, terminal=None):
+        def blink(self, blink, terminal=None): # enable or disable blinking one or all labels
             if terminal is None:
                 terminals = self.terminals()
             else:
@@ -104,7 +110,7 @@ class BoardTabs(QTabWidget):
                         pass
                     label.show()
 
-        def terminals(self):
+        def terminals(self): # return list of enabled terminals across all enabled ports
             terminals = []
             for port in self.__board.mux:
                 for channel in port:
@@ -114,8 +120,6 @@ class BoardTabs(QTabWidget):
                                 terminals.append(terminal)
             return terminals
 
-        # REVERT: raw data save
-        # def new_data(self, time, terminal, results: dict):
         def new_data(self, time, terminal, results: dict, raw_results: dict=None):
             self.blink(False, terminal)
 
@@ -162,15 +166,12 @@ class BoardTabs(QTabWidget):
                 log_file.write('\n')
 
             # REVERT: raw data save
-            if raw_results is not None:
-                raw_log_filename = log_layout.field.text() + '/.board{0}_port{1}_channel{2}_{3}'.format(self.board().address(), terminal.port, terminal.channel, 'reference' if terminal.is_reference else 'impedance')
-                with open(raw_log_filename, 'a+') as log_file:
-                    log_file.write('{0}\t'.format(time.strftime('%Y-%m-%d %H:%M')))
-                    json.dump(raw_results, log_file)
-                    log_file.write('\n')
-
-            # REVERT: timing
-            # then = datetime.utcnow()
+            # if raw_results is not None:
+            #     raw_log_filename = log_layout.field.text() + '/.board{0}_port{1}_channel{2}_{3}'.format(self.board().address(), terminal.port, terminal.channel, 'reference' if terminal.is_reference else 'impedance')
+            #     with open(raw_log_filename, 'a+') as log_file:
+            #         log_file.write('{0}\t'.format(time.strftime('%Y-%m-%d %H:%M')))
+            #         json.dump(raw_results, log_file)
+            #         log_file.write('\n')
 
             fig, ax1 = plt.subplots(dpi=40)  # type: (plt.Figure, plt.Axes)
             fig.tight_layout()
@@ -197,9 +198,6 @@ class BoardTabs(QTabWidget):
             fig.savefig(filename, bbox_inches='tight', transparent=True, dpi=40)
             plt.close(fig)
 
-            # REVERT: timing
-            # print('figure create: ', datetime.utcnow() - then)
-
             if terminal.is_reference:
                 self.port_tabs[terminal.port].channels[terminal.channel].reference_graph.load(filename)
             else:
@@ -210,6 +208,7 @@ class BoardTabs(QTabWidget):
 
     sig_show_all_labels = pyqtSignal(name='show_all_labels')
 
+    # make 'No Data' graph
     def __init__(self):
         super().__init__()
 
@@ -238,6 +237,7 @@ class BoardTabs(QTabWidget):
         fig.savefig(filename, bbox_inches='tight', transparent=True, dpi=40)
         plt.close(fig)
 
+    # add/remove tabs according to the list of Boards provided
     def update_tabs(self, boards):
         for i in range(self.count() - 1, -1, -1):
             if self.widget(i).board().address() not in [board.address() for board in boards]:
@@ -253,12 +253,15 @@ class BoardTabs(QTabWidget):
                         i += 1
                 self.insertTab(i, self.BoardTab(board, parent=self), 'Board {0}'.format(board.address()))
 
+    # return list of all my BoardTabs
     def tab_list(self):
         return [self.widget(i) for i in range(self.count())]
 
+    # make iterable, return iterator over all my BoardTabs
     def __iter__(self):
         return iter([self.widget(i) for i in range(self.count())])
 
+    # try to connect to all enabled terminals, return list of error messages
     def test_connection(self):
         print()
         print('Connection test')
@@ -278,6 +281,7 @@ class BoardTabs(QTabWidget):
         print()
         return errors
 
+# make 'Schedule' UI
 class ScheduleGroup(QGroupBox):
     def __init__(self):
         super().__init__('Schedule')
@@ -326,6 +330,7 @@ class ScheduleGroup(QGroupBox):
 
         self.setLayout(layout)
 
+# Subclass of QHBoxLayout with error symbol built-in
 class QHBoxLayoutWithError(QHBoxLayout):
     class ErrorLabel(QLabel):
         def __init__(self, application, text=None):
@@ -361,6 +366,7 @@ class QHBoxLayoutWithError(QHBoxLayout):
     def hide_error(self, hide=True):
         self.show_error(not hide)
 
+# make 'Sweep' UI
 class SweepGroup(QGroupBox):
     def __init__(self):
         super().__init__('Sweep')
@@ -397,6 +403,7 @@ class SweepGroup(QGroupBox):
 
         self.setLayout(layout)
 
+# make 'Log' UI
 class LogLayout(QHBoxLayoutWithError):
     def __init__(self):
         self.field = QLineEdit('Results')
@@ -404,20 +411,17 @@ class LogLayout(QHBoxLayoutWithError):
         self.button = QPushButton('Change...')
         super().__init__(QLabel('Log'), self.field, self.button)
 
-class DetectButton(QPushButton):
-    def __init__(self):
-        super().__init__('Detect Boards')
-        # super().__init__('Detect Boards (hover for help)')
-        # TODO: actual help
-        # self.setToolTip('')
-
+# change log directory button handler
 def change_log_directory():
     # noinspection PyArgumentList,PyCallByClass
     log_layout.field.setText(QFileDialog.getExistingDirectory(window, directory=log_layout.field.text()))
 
+# check all input data is ok
 def validate():
+    # are there any boards discovered
     valid = len(board_tabs.tab_list()) > 0
 
+    # check log directory access
     try:
         with open(log_layout.field.text()+'/.test', 'a+') as file:
             file.write('\n')
@@ -428,12 +432,14 @@ def validate():
     else:
         log_layout.hide_error()
 
+    # check all 'Sweep' fields
     for layout, field in [(sweep_group.start_layout, sweep_group.start_field),
                    (sweep_group.final_layout, sweep_group.final_field),
                    (sweep_group.samples_layout, sweep_group.samples_field)]:
         layout.hide_error(field.hasAcceptableInput())
         valid &= field.hasAcceptableInput()
 
+    # fill 'Step' field unless 'Logarithmic' checkbox is checked, then just empty and disable it
     if sweep_group.log_checkbox.isChecked():
         sweep_group.increment_label.setDisabled(True)
         sweep_group.increment_field.setText('')
@@ -457,6 +463,7 @@ def validate():
             sweep_group.increment_field.setText('')
             sweep_group.increment_layout.hide_error()
 
+    # calculate schedule interval and verify it's less than 24 hours
     if schedule_group.interval_field.hasAcceptableInput():
         schedule_group.interval = timedelta(seconds=int(schedule_group.interval_field.text()))
         if schedule_group.interval_combobox.currentText() == 'h':
@@ -472,6 +479,7 @@ def validate():
         schedule_group.interval = None
         schedule_group.interval_layout.show_error()
 
+    # calculate schedule delay and verify it's less than 24 hours
     if schedule_group.delay_field.hasAcceptableInput() and schedule_group.delay_checkbox.isChecked():
         schedule_group.start = timedelta(seconds=int(schedule_group.delay_field.text()))
         if schedule_group.delay_combobox.currentText() == 'h':
@@ -492,6 +500,7 @@ def validate():
 
     update_timer(schedule_group.start)
 
+    # check stop field
     if schedule_group.stop_checkbox.isChecked() and not schedule_group.stop_field.hasAcceptableInput():
         valid = False
         schedule_group.stop_layout.show_error()
@@ -500,15 +509,18 @@ def validate():
 
     return valid
 
+# enable/disable/change parts of the UI when acquisition is started and stopped
 def set_controls(started):
     start_stop_button.setText('STOP' if started else 'START')
 
+    # change start/stop button colour
     # noinspection PyShadowingNames
     pal = start_stop_button.palette()
     pal.setColor(pal.Button, Qt.red if started else Qt.green)
     start_stop_button.setPalette(pal)
     start_stop_button.update()
 
+    # parts of the UI to 'de-grey' when they're disabled
     unmute = [
         sweep_group.start_field,
         sweep_group.samples_field,
@@ -518,6 +530,7 @@ def set_controls(started):
         log_layout.field
     ]
 
+    # parts of the UI to disable
     # noinspection PyTypeChecker
     disable = unmute + [
         sweep_group.log_checkbox,
@@ -527,13 +540,13 @@ def set_controls(started):
         detect_boards_button
     ]
 
+    # disable all port tabs, unmute enabled tabs and channels
     for board_tab in board_tabs:
         for port_tab in board_tab:  # type: BoardTabs.PortTab
             disable += [port_tab]
             if port_tab.isChecked():
                 unmute += [port_tab]
                 disable += [channel for channel in port_tab.channels.values()]
-                # unmute += [channel for channel in port_tab.channels.values() if channel.isChecked()]
 
     if sweep_group.log_checkbox.isChecked():
         unmute += [sweep_group.log_checkbox]
@@ -546,9 +559,11 @@ def set_controls(started):
         unmute += [schedule_group.stop_checkbox, schedule_group.stop_field, schedule_group.stop_label]
         disable += [schedule_group.stop_field, schedule_group.stop_label]
 
+    # do the disabling
     for widget in disable:
         widget.setDisabled(started)
 
+    # do the unmuting
     for widget in unmute:
         widget.setStyleSheet('' if not started else
                              'color: black; '
@@ -559,32 +574,26 @@ def set_controls(started):
                              'QWidget { color: black; }; '
                              'QListView { color: black; }; ')
 
+# start button handler
 def start():
+    # save setup
     save_config()
+    # check connections
     errors = '\n'.join(board_tabs.test_connection())
 
     if len(errors) > 0:
         # noinspection PyArgumentList,PyCallByClass
         QMessageBox.critical(window, 'Connection Error', errors)
     elif validate():
-        # for layout in [
-        #     sweep_group.start_layout,
-        #     sweep_group.final_layout,
-        #     sweep_group.increment_layout,
-        #     sweep_group.samples_layout,
-        #     schedule_group.interval_layout,
-        #     schedule_group.start_layout,
-        #     schedule_group.stop_layout,
-        #     log_layout
-        # ]:
-        #     layout.__error_label.toolTip().showText()
-
         set_controls(True)
+
+        # disable start button for now
         # noinspection PyUnresolvedReferences
         start_stop_button.clicked.disconnect()
 
         sweeps = int(schedule_group.stop_field.text()) if schedule_group.stop_checkbox.isChecked() else None
 
+        # configure SchedulerThread
         global scheduler_thread
         scheduler_thread = SchedulerThread(
             int(sweep_group.start_field.text()),
@@ -597,14 +606,20 @@ def start():
             board_tabs.tab_list()
         )
 
+        # connect signals for timer and stopping
         scheduler_thread.sig_update_timer.connect(update_timer)
         scheduler_thread.sig_done.connect(stop)
         scheduler_thread.start()
+        # re-enable start button, change function to stop
         start_stop_button.clicked.connect(stop)
 
+# stop button handler
 def stop():
+    # disable stop button for now
     # noinspection PyUnresolvedReferences
     start_stop_button.clicked.disconnect()
+
+    # make it a yellow stopping button
     start_stop_button.setText('STOPPING')
     # noinspection PyShadowingNames
     pal = start_stop_button.palette()
@@ -612,15 +627,19 @@ def stop():
     start_stop_button.setPalette(pal)
     start_stop_button.repaint()
 
+    # disconnect the time or else it keeps interfering
     scheduler_thread.sig_update_timer.disconnect(update_timer)
+    # ask the SchedulerThread to stop
     scheduler_thread.quit()
+    # stop all labels blinking
     try:
         blink_timer.disconnect()
-    except TypeError:
+    except TypeError: # no connected listeners
         pass
     board_tabs.sig_show_all_labels.emit()
 
     validate()
+    # re-enable stop button and change function to start
     set_controls(False)
     start_stop_button.clicked.connect(start)
 
@@ -729,6 +748,7 @@ def stop():
 #             board_tabs.sig_show_all_labels.emit()
 #             start_stop_button.setEnabled(True)
 
+# thread that handles timings in between sweeps
 class SchedulerThread(QThread):
     sig_update_timer = pyqtSignal(timedelta, name='update_timer')
     sig_done = pyqtSignal(name='done')
@@ -747,16 +767,19 @@ class SchedulerThread(QThread):
         self.quit_now = False
 
     def run(self):
+        # next sweep happens after start delay
         next_time = datetime.utcnow() + self.__delay
 
         for sweep in count():
             if sweep == self.__sweeps:
                 break
+            # check time and update timer 10 times per second
             while next_time - datetime.utcnow() > timedelta() and not self.quit_now:
                 self.sig_update_timer.emit(next_time - datetime.utcnow())
                 sleep(0.1)
             next_time += self.__period
 
+            # make sure MuxThread is finished
             self.__mux_thread.wait()
             if self.quit_now:
                 return
@@ -767,16 +790,20 @@ class SchedulerThread(QThread):
         if not self.quit_now:
             self.sig_done.emit()
 
+    # request stop
     def quit(self):
         self.quit_now = True
+        # pass request down
         self.__mux_thread.quit()
         self.wait()
 
+# thread for synchronising terminal changes between boards
 class MuxThread(QThread):
     sig_error = pyqtSignal(str, name='error')
 
     def __init__(self, time, start_freq, final_freq, samples, logarithmic, tabs, parent=None):
         super().__init__(parent)
+        # make a SweepThread for every board
         self.sweep_threads = [SweepThread(time, start_freq, final_freq, samples, logarithmic, tab) for tab in tabs]
         self.quit_now = False
         self.sig_error.connect(error_dialog.update_message)
@@ -785,6 +812,7 @@ class MuxThread(QThread):
         while len(self.sweep_threads) > 0:
             for i in range(len(self.sweep_threads)-1, -1, -1):
                 try:
+                    # try every enabled terminal until one is found that's not disconnected
                     while True:
                         try:
                             self.sweep_threads[i].select_next_terminal()
@@ -792,31 +820,35 @@ class MuxThread(QThread):
                         except PortDisconnectedError as error:
                             self.sweep_threads[i].tab.blink(False)
                             self.sig_error.emit(error.strerror)
-                except StopIteration:
+                except StopIteration: # run out of enabled terminals
                     self.sweep_threads[i].tab.blink(False)
                     del self.sweep_threads[i]
-                except IOError:
+                except IOError: # can't connect to board
                     self.sweep_threads[i].tab.blink(False)
                     self.sig_error.emit('Board {0} IO failure'.format(self.sweep_threads[i].tab.board().address()))
                     del self.sweep_threads[i]
 
+            # start all threads together
             for sweep_thread in self.sweep_threads:
                 sweep_thread.start()
+            # wait for them all to stop before carrying on
             for sweep_thread in self.sweep_threads:
                 sweep_thread.wait()
             if self.quit_now:
                 return
 
+    # request stop
     def quit(self):
         self.quit_now = True
+        # pass request down
         for sweep_thread in self.sweep_threads:
             sweep_thread.quit()
         self.wait()
 
+# thread for doing a sweep on a single board
 class SweepThread(QThread):
-    # REVERT: raw data save
-    # sig_new_data = pyqtSignal(datetime, Board.Mux.Port.Channel.Terminal, dict, name='new_data')
-    sig_new_data = pyqtSignal(datetime, Board.Mux.Port.Channel.Terminal, dict, dict, name='new_data')
+    # emit this when a sweep is done
+    sig_new_data = pyqtSignal(datetime, Board.Mux.Port.Channel.Terminal, dict, name='new_data')
     sig_error = pyqtSignal(str, name='error')
 
     def __init__(self, time, start_freq, final_freq, samples, logarithmic, tab: BoardTabs.BoardTab, parent=None):
@@ -836,19 +868,18 @@ class SweepThread(QThread):
     def run(self):
         error_msg = None
 
+        # try to recover once after a failure
         for tries in range(2):
             try:
                 if self.quit_now:
                     return
-                elif self.logarithmic:
+                elif self.logarithmic: # log sweep
                     results = {}
                     for freq in logspace(log10(self.start_freq), log10(self.final_freq), self.samples):
                         results.update(self.tab.board().sweep(freq, 0, 0))
                     self.sig_new_data.emit(self.time, self.tab.board().mux.selected(), results)
                 else:
-                    # REVERT: raw data save
-                    # self.sig_new_data.emit(self.time, self.tab.board().mux.selected(), self.tab.board().sweep(self.start_freq, (self.final_freq - self.start_freq) / self.samples, self.samples))
-                    self.sig_new_data.emit(self.time, self.tab.board().mux.selected(), *self.tab.board().sweep(self.start_freq, (self.final_freq - self.start_freq) / self.samples, self.samples))
+                    self.sig_new_data.emit(self.time, self.tab.board().mux.selected(), self.tab.board().sweep(self.start_freq, (self.final_freq - self.start_freq) / self.samples, self.samples))
                 return
             except QuitNow:
                 return
@@ -857,23 +888,23 @@ class SweepThread(QThread):
                     error_msg = 'Board {0} IO failure'.format(self.tab.board().address())
                 else:
                     error_msg = str(error)
-                # try:
-                #     self.tab.board().reset_ad5933()
-                # except IOError as error:
-                #     break
 
+        # show the exception message
         self.sig_error.emit(error_msg)
 
+    # get the next enabled terminal from the associated tab and select it
     def select_next_terminal(self):
         self.tab.blink(False)
         self.tab.select(next(self.terminals))
 
+    # request stop
     def quit(self):
         self.quit_now = True
+        # pass request down
         self.tab.board().quit_now = True
         self.wait()
 
-
+# update countdown timer
 def update_timer(time: timedelta):
     if time is None:
         schedule_group.next_field.setText('')
@@ -882,10 +913,12 @@ def update_timer(time: timedelta):
         minutes, seconds = divmod(remainder, 60)
         schedule_group.next_field.setText('{:02}:{:02}:{:02}'.format(int(hours), int(minutes), int(seconds)))
 
+# try to find boards
 def detect_boards():
     boards = []
     for address in range(0, 8):
         try:
+            # try to connect
             boards.append(Board(address))
             message_box = QMessageBox(window)
             message_box.setText('Found board {0}, reading calibration constants...'.format(address))
@@ -894,13 +927,14 @@ def detect_boards():
             message_box.setStandardButtons(QMessageBox.NoButton)
             message_box.setIcon(QMessageBox.Information)
 
-            # REVERT: address 7 bodge
-            if address == 7:
-                boards[-1].interp_1x = boards[0].interp_1x
-                boards[-1].interp_5x = boards[0].interp_5x
-                message_box.close()
-                continue
+            # REVERT: address 7 bodge for testing legacy boards
+            # if address == 7:
+            #     boards[-1].interp_1x = boards[0].interp_1x
+            #     boards[-1].interp_5x = boards[0].interp_5x
+            #     message_box.close()
+            #     continue
 
+            # load calibration constants in a different thread
             thread = QThread()
             thread.run = boards[-1].load_calibration_constants
             thread.finished.connect(message_box.accept)
@@ -910,8 +944,10 @@ def detect_boards():
         except IOError:
             pass
 
+    # add/remove tabs
     board_tabs.update_tabs(boards)
 
+# restore
 def load_config():
     data = {}
     try:
@@ -943,17 +979,20 @@ def load_config():
 
     for board_tab in board_tabs:  # type: BoardTabs.BoardTab
         for index, port_tab in board_tab.port_tabs.items():
+            # port 'enabled' checkbox status stored as: board address -> port number -> 'port'
             try:
                 port_tab.setChecked(data[str(board_tab.board().address())][str(index)]['port'])
             except (KeyError, ValueError, AttributeError):
                 port_tab.setChecked(True)
 
+            # channel 'enabled' checkbox status stored as: board address -> port number -> channel number
             for channel_index, channel in port_tab.channels.items():
                 try:
                     channel.setChecked(data[str(board_tab.board().address())][str(index)][str(channel_index)])
                 except (KeyError, ValueError, AttributeError):
                     channel.setChecked(True)
 
+#save UI state to JSON file
 def save_config():
     data = {
         'sweep_group.log_checkbox': sweep_group.log_checkbox.isChecked(),
@@ -973,13 +1012,18 @@ def save_config():
     for board_tab in board_tabs:  # type: BoardTabs.BoardTab
         data[str(board_tab.board().address())] = {}
         for index, port_tab in board_tab.port_tabs.items():
+            # port 'enabled' checkbox status stored as: board address -> port number -> 'port'
             data[str(board_tab.board().address())][str(index)] = {'port': port_tab.isChecked()}
+
+            # channel 'enabled' checkbox status stored as: board address -> port number -> channel number
             for channel_index, channel in port_tab.channels.items():
                 data[str(board_tab.board().address())][str(index)][str(channel_index)] = channel.isChecked()
 
     with open('/home/pi/.loc_settings.ini', 'w') as settings_file:
         json.dump(data, settings_file)
 
+
+# error dialog that must handle updating of error messages from several different threads
 class ErrorDialog(QMessageBox):
     def __init__(self, parent):
         super().__init__(parent)
@@ -992,12 +1036,30 @@ class ErrorDialog(QMessageBox):
         self.finished.connect(self.error_set.clear)
 
     def update_message(self, error):
-        self.error_set.add(error)
+        self.error_set.add(error) # atomic operation
         self.setText('\n'.join(sorted(self.error_set, key=str.lower)))
         self.show()
 
+# user instructions for calibration
+if len(sys.argv) > 1:
+    try:
+        cal_address = int(sys.argv[2])
+    except (ValueError, IndexError):
+        cal_address = None
+
+    if len(sys.argv) == 3 and sys.argv[1] == '-calibrate' and cal_address is not None and 0 <= cal_address <= 7:
+        try:
+            input('Plug calibration breakout board into port 1 and press enter\n')
+        except KeyboardInterrupt:
+            exit()
+        Board(cal_address).calibrate(Board.Mux.port1)
+    else:
+        print('Usage: LocControl.py [-calibrate <board_address>]')
+    exit()
+
 matplotlib.use('Qt5Agg')
 
+# make Qt application, set mouse cursor to waiting symbol and set the UI style
 app = QApplication([])
 app.setOverrideCursor(Qt.WaitCursor)
 app.setStyle('cleanlooks')
@@ -1007,15 +1069,18 @@ window = QWidget()
 window.setWindowTitle('Loc Control')
 window.showMaximized()
 
+# do this to show the window to the user as early as possible
 app.processEvents()
 
+# location of graph image files
 ROOT_DIR = '/tmp/LocControl/'
 os.makedirs(ROOT_DIR, exist_ok=True)
 
+# make the UI
 sweep_group = SweepGroup()
 schedule_group = ScheduleGroup()
 log_layout = LogLayout()
-detect_boards_button = DetectButton()
+detect_boards_button = QPushButton('Detect Boards')
 start_stop_button = QPushButton('START')
 start_stop_button.setSizePolicy(start_stop_button.sizePolicy().Expanding, start_stop_button.sizePolicy().Expanding)
 start_stop_button.setDefault(True)
@@ -1067,8 +1132,6 @@ settings.setLayout(settings_layout)
 settings.setFixedWidth(250)
 settings.setContentsMargins(0, 0, 0, 0)
 
-# TODO: show current status
-# TODO: set correct aspect ratio
 board_tabs = BoardTabs()
 
 window_layout = QHBoxLayout()
@@ -1079,6 +1142,7 @@ window_layout.addWidget(board_tabs, 0)
 
 window.setLayout(window_layout)
 
+# 1 Hz graph label blinking tick source
 blink_timer = QTimer()
 blink_timer.start(500)
 
