@@ -69,6 +69,7 @@ class AD5933:
     imag_data = Register(0x96, 2)
 
     # current frequency being produced
+    @property
     def output_freq(self):
         return self.__cur_freq
 

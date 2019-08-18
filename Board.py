@@ -9,11 +9,14 @@ import struct
 from datetime import datetime
 from PyQt5.QtCore import QMutex, QMutexLocker
 
+
 class QuitNow(InterruptedError):
     """raise when board operation has been ordered to stop"""
 
+
 class PortDisconnectedError(ConnectionError):
     """raise when access to a disconnected port is requested"""
+
 
 class Board:
     __gpio = pigpio.pi()
@@ -245,12 +248,20 @@ class Board:
             # select i2c channel to talk to slave muxes
             self.__bus.i2c_rdwr(i2c_msg.write(0x70 + self.__board_address, [(0b10000 >> terminal.port) | 0xf0]))
 
+            # select channels on slave muxes
             try:
-                # select channels on slave muxes
-                self.__bus.i2c_rdwr(i2c_msg.write(0x46, [data if 1 <= terminal.channel <= 4 else 0b00000000]))
-                self.__bus.i2c_rdwr(i2c_msg.write(0x47, [data if 5 <= terminal.channel <= 8 else 0b00000000]))
+                self.__bus.write_byte_data(0x41, 3, 0b00000000)
+                sleep(5e-6)
+                self.__bus.write_byte_data(0x41, 1, ((terminal.channel-1)*2) + (1 if terminal.is_reference else 0))
             except OSError:
-                raise PortDisconnectedError(121, 'Board {0}, port {1} breakout board is not connected'.format(self.__board_address, terminal.port))
+                try:
+                    self.__bus.i2c_rdwr(i2c_msg.write(0x46, [data if 1 <= terminal.channel <= 4 else 0b00000000]))
+                    self.__bus.i2c_rdwr(i2c_msg.write(0x47, [data if 5 <= terminal.channel <= 8 else 0b00000000]))
+                except OSError:
+                    raise PortDisconnectedError(121, 'Board {0}, port {1} breakout board is not connected'.format(
+                            self.__board_address,
+                            terminal.port
+                        ))
 
             self.__selected = terminal
 
@@ -295,7 +306,7 @@ class Board:
         @staticmethod
         def _encode(gain_ranges: dict):
             # get value of first dictionary pair
-            first = lambda d : d[list(d.keys())[0]]
+            def first(d): return d[list(d.keys())[0]]
 
             for gain_range in gain_ranges.values():
                 # assert all frequencies in all ranges are equal
@@ -518,7 +529,7 @@ class Board:
         imag = []
 
         # calculate time taken for DFT
-        sleep_time = (16 * 1024 / self._ad5933.clock()) + (self._ad5933.get_settle_cycles() / self._ad5933.output_freq())
+        sleep_time = (16 * 1024 / self._ad5933.clock()) + (self._ad5933.get_settle_cycles() / self._ad5933.output_freq)
 
         timeouts = 0
         while len(real) < repeats:
@@ -601,7 +612,7 @@ class Board:
             results[frequency] = (pair_1x, pair_5x)
 
         # calculate sweep time for debug purposes
-        print('Sweep duration: ',  datetime.now() - then)
+        # print('Sweep duration: ',  datetime.now() - then)
 
         # apply gain factors and phase offsets
         return self.adjust(results)
@@ -625,19 +636,19 @@ class Board:
         if start <= ext_limit:
             ext_steps = steps if increment == 0 else min(steps, (ext_limit - start) // increment)
             # start the sweep, get first measurement
-            with self.MutexLocker(self.__mutex, self.select): # lock i2c bus
+            with self.MutexLocker(self.__mutex, self.select):  # lock i2c bus
                 self._ad5933.set_external_oscillator(True)
                 self._ad5933.set_start_increment_steps(start, increment, ext_steps)
                 self._ad5933.start_output()
                 self._ad5933.start_sweep()
-            results[self._ad5933.output_freq()] = self.get_measurement(repeats=repeats)
+            results[self._ad5933.output_freq] = self.get_measurement(repeats=repeats)
 
             # continue the sweep to the end
-            with self.MutexLocker(self.__mutex, self.select) as mutex: # lock i2c bus
+            with self.MutexLocker(self.__mutex, self.select) as mutex:  # lock i2c bus
                 while not self._ad5933.sweep_complete() and ext_steps != 0:
                     self._ad5933.increment_freq()
                     mutex.unlock()
-                    results[self._ad5933.output_freq()] = self.get_measurement(repeats=repeats)
+                    results[self._ad5933.output_freq] = self.get_measurement(repeats=repeats)
                     mutex.relock()
                 self._ad5933.reset()
             int_start += (ext_steps + 1) * increment
@@ -651,14 +662,14 @@ class Board:
                 self._ad5933.set_start_increment_steps(int_start, increment, int_steps)
                 self._ad5933.start_output()
                 self._ad5933.start_sweep()
-            results[self._ad5933.output_freq()] = self.get_measurement(repeats=repeats)
+            results[self._ad5933.output_freq] = self.get_measurement(repeats=repeats)
 
             # continue the sweep to the end
             with self.MutexLocker(self.__mutex, self.select) as mutex: # lock i2c bus
-                while not self._ad5933.sweep_complete() and self._ad5933.output_freq() <= (100000 - increment) and int_steps != 0:
+                while not self._ad5933.sweep_complete() and self._ad5933.output_freq <= (100000 - increment) and int_steps != 0:
                     self._ad5933.increment_freq()
                     mutex.unlock()
-                    results[self._ad5933.output_freq()] = self.get_measurement(repeats=repeats)
+                    results[self._ad5933.output_freq] = self.get_measurement(repeats=repeats)
                     mutex.relock()
                 self._ad5933.reset()
 
