@@ -21,6 +21,7 @@ class PortDisconnectedError(ConnectionError):
 class Board:
     __gpio = pigpio.pi()
     __mutex = QMutex()
+    __bus = None
 
     # mutex that calls the provided function (i.e. selects the board) when locked
     class MutexLocker(QMutexLocker):
@@ -42,13 +43,14 @@ class Board:
         po_fs = numpy.asarray([])
         pos = numpy.asarray([])
 
-    def __init__(self, address, i2c_port=1):
+    def __init__(self, address):
         Board.__gpio.set_mode(4, pigpio.OUTPUT)
         Board.__gpio.write(4, 1)
         Board.reset()
 
         self.__address = address
-        self.__bus = SMBus(i2c_port)
+        if Board.__bus is None:
+            Board.__bus = SMBus(1)
         self.select()
         self._ad5933 = AD5933(self.__bus)
         self.mux = self.Mux(self.__bus, address)

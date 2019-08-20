@@ -3,7 +3,7 @@ import os
 import sys
 from datetime import timedelta, datetime
 from itertools import count
-from math import log10
+from math import log10, floor, ceil, isnan, isinf
 from time import sleep
 
 from PyQt5.QtChart import QChart, QLineSeries, QChartView, QLogValueAxis, QValueAxis, QDateTimeAxis
@@ -30,6 +30,8 @@ class TerminalLabel(QLabel):  # label above graphs
 
 
 class ChartView(QChartView):
+    axes_update_signal = pyqtSignal(float, float, float, float, name='axes_update')
+
     def setEnabled(self, enable):
         super().setEnabled(enable)
         self.__enabled = enable
@@ -107,11 +109,11 @@ class ChartView(QChartView):
 
         x_axis_group.time_radio.toggled.connect(self.__update_x_axis)
 
-        self.__magnitude_frequency = None  # float(log_group.magnitude_combo.currentText())
+        self.__magnitude_frequency = None
         # noinspection PyUnresolvedReferences
         log_group.magnitude_combo.currentIndexChanged.connect(self.__update_magnitude_frequency)
 
-        self.__phase_frequency = None  # float(log_group.phase_combo.currentText())
+        self.__phase_frequency = None
         # noinspection PyUnresolvedReferences
         log_group.phase_combo.currentIndexChanged.connect(self.__update_phase_frequency)
 
@@ -142,76 +144,52 @@ class ChartView(QChartView):
 
         self.m_axis.setLabelFormat('%i')
         self.m_axis.setRange(0, 10000)
+        self.m_axis.setTickCount(6)
         self.p_axis.setLabelFormat('%i')
         self.p_axis.setRange(-90, 90)
 
         self.__refresh_data(True)
 
+    def update_y_axes(self, magnitude_min, magnitude_max, magnitude_ticks, phase_min, phase_max, phase_ticks):
+        self.m_axis.setRange(magnitude_min, magnitude_max)
+        self.m_axis.setTickCount(magnitude_ticks)
+        self.p_axis.setRange(phase_min, phase_max)
+        self.p_axis.setTickCount(phase_ticks)
+
+    def __clear(self, title):
+        self.chart.setTitle(title)
+        self.magnitude_series.clear()
+        self.phase_series.clear()
+        self.axes_update_signal.emit(float('NaN'), float('NaN'), float('NaN'), float('NaN'))
+
     def __refresh_data(self, clear=True):
+        magnitude_minimum = float('+inf')
+        magnitude_maximum = float('-inf')
+        phase_minimum = float('+inf')
+        phase_maximum = float('-inf')
         if x_axis_group.frequency_radio.isChecked():
             if len(self.data) == 0:
-                self.chart.setTitle('NO DATA')
+                self.__clear('NO DATA')
             else:
                 self.chart.setTitle('')
                 self.magnitude_series.clear()
                 self.phase_series.clear()
-                for frequency, (magnitude, phase) in sorted(
-                        self.data[sorted(self.data.keys(), reverse=True)[0]].items()):
-                    if magnitude > 40000:
-                        self.magnitude_series.clear()
-                        self.phase_series.clear()
-                        self.chart.setTitle('DISCONNECTED')
-                        return
+                connected = False
+                for frequency, (magnitude, phase) in sorted(self.data[sorted(self.data.keys())[-1]].items()):
+                    if magnitude < 10000:
+                        connected = True
                     self.magnitude_series.append(frequency, magnitude)
                     self.phase_series.append(frequency, phase)
-        else:
-            # frequency = float(x_axis_group.time_field.text())
-            # times = list(sorted(time for time in self.data.keys() if frequency in self.data[time]))
-            # if len(times) == 0:
-            #     if frequency == int(frequency):
-            #         frequency = int(frequency)
-            #     self.chart.setTitle('NO ' + str(frequency) + ' Hz DATA')
-            #     self.t_axis.setLabelsVisible(False)
-            # else:
-            #     self.chart.setTitle('')
-            #     self.t_axis.setLabelsVisible(True)
-            #
-            #     if times[-1]-times[0] < timedelta(hours=1):
-            #         period = timedelta(minutes=10)
-            #         self.t_axis.setFormat('hh:mm')
-            #         self.t_axis.setTitleText('Time (hh:mm UTC)')
-            #     elif times[-1]-times[0] < timedelta(days=1):
-            #         period = timedelta(hours=1)
-            #         self.t_axis.setFormat('hh:mm')
-            #         self.t_axis.setTitleText('Time (hh:mm UTC)')
-            #     else:
-            #         period = timedelta(days=1)
-            #         self.t_axis.setFormat('dd')
-            #         self.t_axis.setTitleText('Time (day)')
-            #         self.t_axis.setTickCount((times[-1] - times[0]).days + 2)
-            #
-            #     self.t_axis.setRange(
-            #         times[0] - (times[0] - datetime.min) % period,
-            #         times[-1] + (datetime.min - times[-1]) % period
-            #     )
-            #
-            #     if clear:
-            #         self.magnitude_series.clear()
-            #         self.phase_series.clear()
-            #     else:
-            #         times = [times[-1]]
-            #
-            #     for time in times:
-            #         (magnitude, phase) = self.data[time][frequency]
-            #         self.magnitude_series.append(QDateTime(time).toMSecsSinceEpoch(), magnitude)
-            #         self.phase_series.append(QDateTime(time).toMSecsSinceEpoch(), phase)
-            #         # TODO: add gaps for disconnections
-            #         if magnitude > 40000:
-            #             self.magnitude_series.clear()
-            #             self.phase_series.clear()
-            #             self.chart.setTitle('DISCONNECTED')
-            #             return
+                    magnitude_minimum = min(magnitude_minimum, magnitude)
+                    magnitude_maximum = max(magnitude_maximum, magnitude)
+                    phase_minimum = min(phase_minimum, phase)
+                    phase_maximum = max(phase_maximum, phase)
 
+                if connected:
+                    self.axes_update_signal.emit(magnitude_minimum, magnitude_maximum, phase_minimum, phase_maximum)
+                else:
+                    self.__clear('DISCONNECTED')
+        else:
             try:
                 self.__magnitude_frequency = log_group.magnitude_combo.currentData()
             except ValueError:
@@ -222,51 +200,67 @@ class ChartView(QChartView):
             except ValueError:
                 self.__phase_frequency = None
 
+            
             times = list(sorted(time for time in self.data.keys() if
                                 self.__magnitude_frequency in self.data[time] and
                                 self.__phase_frequency in self.data[time]
                                 )
                          )
+            
+            times = []
+            for time in self.data.keys():
+                if self.data[time].keys() & {self.__magnitude_frequency, self.__phase_frequency}:
+                    times.append(time)
+            times.sort()
 
             if len(times) == 0 or self.__magnitude_frequency is None or self.__phase_frequency is None:
-                self.chart.setTitle('NO DATA')
+                self.__clear('NO DATA')
                 self.t_axis.setLabelsVisible(False)
             else:
                 self.chart.setTitle('')
                 self.t_axis.setLabelsVisible(True)
 
-                if times[-1] - times[0] < timedelta(hours=1):
-                    period = timedelta(minutes=10)
+                if times[-1] - times[0] < timedelta(days=1):
                     self.t_axis.setFormat('hh:mm')
                     self.t_axis.setTitleText('Time (hh:mm UTC)')
-                elif times[-1] - times[0] < timedelta(days=1):
-                    period = timedelta(hours=1)
-                    self.t_axis.setFormat('hh:mm')
-                    self.t_axis.setTitleText('Time (hh:mm UTC)')
+                    if times[-1] - times[0] < timedelta(minutes=5):
+                        period = timedelta(minutes=1)
+                    elif times[-1] - times[0] < timedelta(minutes=10):
+                        period = timedelta(minutes=2)
+                    elif times[-1] - times[0] < timedelta(hours=1):
+                        period = timedelta(minutes=10)
+                    else:
+                        period = timedelta(hours=1)
                 else:
                     period = timedelta(days=1)
                     self.t_axis.setFormat('dd')
                     self.t_axis.setTitleText('Time (day)')
-                    self.t_axis.setTickCount((times[-1] - times[0]).days + 2)
 
-                self.t_axis.setRange(
-                    times[0] - (times[0] - datetime.min) % period,
-                    times[-1] + (datetime.min - times[-1]) % period
-                )
+                if len(times) == 1 or clear:
+                    fake_time = times[-1]+timedelta(seconds=(1 if times[-1].second < 30 else -1))
+                    self.data[fake_time] = self.data[times[-1]]
+                    times = list(sorted([times[-1], fake_time]))
+
+                    self.t_axis.setRange(times[0], times[1])
+                    self.t_axis.setTickCount(3)
+                else:
+                    axis_start = times[0] - (times[0] - datetime.min) % period
+                    axis_stop = times[-1] + (datetime.min - times[-1]) % period
+
+                    self.t_axis.setTickCount(int((axis_stop - axis_start)/period) + 1)
+                    self.t_axis.setRange(axis_start, axis_stop)
 
                 if clear:
                     self.magnitude_series.clear()
                     self.phase_series.clear()
-                else:
-                    times = [times[-1]]
 
                 connected = False
-                for time in times:
+                for time in times:  # type: datetime
                     try:
-                        (magnitude, _) = self.data[time][self.__magnitude_frequency]
-                        (_, phase) = self.data[time][self.__phase_frequency]
+                        magnitude = self.data[time][self.__magnitude_frequency][0]
+                        phase = self.data[time][self.__phase_frequency][1]
                     except KeyError:
-                        print('No magnitude/phase data for {0}/{1} Hz at {2}'.format(
+                        print('No magnitude/phase data to plot for {0}/{1} Hz at {2}'.format(
                             self.__magnitude_frequency,
                             self.__phase_frequency,
                             time,
@@ -277,15 +271,19 @@ class ChartView(QChartView):
                     self.magnitude_series.append(QDateTime(time).toMSecsSinceEpoch(), magnitude)
                     self.phase_series.append(QDateTime(time).toMSecsSinceEpoch(), phase)
 
-                    if magnitude < 40000:
+                    magnitude_minimum = min(magnitude_minimum, magnitude)
+                    magnitude_maximum = max(magnitude_maximum, magnitude)
+                    phase_minimum = min(phase_minimum, phase)
+                    phase_maximum = max(phase_maximum, phase)
+
+                    if magnitude < 10000:
                         connected = True
 
-                if not connected:
+                if connected:
+                    self.axes_update_signal.emit(magnitude_minimum, magnitude_maximum, phase_minimum, phase_maximum)
+                else:
                     # TODO: add gaps for disconnections
-                    self.magnitude_series.clear()
-                    self.phase_series.clear()
-                    self.chart.setTitle('DISCONNECTED')
-                    return
+                    self.__clear('DISCONNECTED')
 
     def add_data(self, time, results):
         self.data[time] = results
@@ -293,8 +291,11 @@ class ChartView(QChartView):
 
 
 class ChannelWidget(QGroupBox):  # pairs of graphs
+    axes_update_signal = pyqtSignal(int, bool, float, float, float, float, name='axes_update')
+
     def __init__(self, channel):
         super().__init__('Channel {0}'.format(channel))
+        self.__channel = channel
         self.setAlignment(Qt.AlignHCenter)
         self.setCheckable(True)
         self.setChecked(True)
@@ -302,6 +303,9 @@ class ChannelWidget(QGroupBox):  # pairs of graphs
         # initialise graphs
         self.impedance_graph = ChartView()
         self.reference_graph = ChartView()
+
+        self.impedance_graph.axes_update_signal.connect(self.__axes_update_impedance)
+        self.reference_graph.axes_update_signal.connect(self.__axes_update_reference)
 
         self.impedance_label = TerminalLabel('Impedance')
         self.reference_label = TerminalLabel('Reference')
@@ -324,6 +328,20 @@ class ChannelWidget(QGroupBox):  # pairs of graphs
         # noinspection PyUnresolvedReferences
         self.toggled.emit(enabled and self.isChecked())
 
+    def __axes_update_impedance(self, magnitude_min, magnitude_max, phase_min, phase_max):
+        self.axes_update_signal.emit(self.__channel, False, magnitude_min, magnitude_max, phase_min, phase_max)
+
+    def __axes_update_reference(self, magnitude_min, magnitude_max, phase_min, phase_max):
+        self.axes_update_signal.emit(self.__channel, True, magnitude_min, magnitude_max, phase_min, phase_max)
+
+    def update_y_axes(self, magnitude_min, magnitude_max, magnitude_ticks, phase_min, phase_max, phase_ticks):
+        self.impedance_graph.update_y_axes(
+            magnitude_min, magnitude_max, magnitude_ticks, phase_min, phase_max, phase_ticks
+        )
+        self.reference_graph.update_y_axes(
+            magnitude_min, magnitude_max, magnitude_ticks, phase_min, phase_max, phase_ticks
+        )
+
 
 class PortTab(QGroupBox):  # tab of 16 graphs
     def __init__(self):
@@ -331,18 +349,119 @@ class PortTab(QGroupBox):  # tab of 16 graphs
         self.setCheckable(True)
         layout = QGridLayout()
 
+        self.__axes = {
+            'magnitude_min': [float('NaN') for _ in range(16)],
+            'magnitude_max': [float('NaN') for _ in range(16)],
+            'phase_min': [float('NaN') for _ in range(16)],
+            'phase_max': [float('NaN') for _ in range(16)],
+        }
+
         # store my ChannelWidgets
         self.channels = {}
         for channel in range(1, 9):
             self.channels[channel] = ChannelWidget(channel)
+            self.channels[channel].axes_update_signal.connect(self.__axes_update)
             self.toggled.connect(self.channels[channel].parent_toggled)
             # noinspection PyArgumentList
             layout.addWidget(self.channels[channel], (channel - 1) // 2, (channel - 1) % 2)
 
         self.setLayout(layout)
+        self.__update_y_axes()
 
     def __iter__(self):  # make iterable, return iterator over my ChannelWidgets
         return iter(self.channels.values())
+
+    def __axes_update(self, channel, is_reference, magnitude_min, magnitude_max, phase_min, phase_max):
+        index = (channel-1)*2 + (1 if is_reference else 0)
+
+        self.__axes['magnitude_min'][index] = magnitude_min
+        self.__axes['magnitude_max'][index] = magnitude_max
+        self.__axes['phase_min'][index] = phase_min
+        self.__axes['phase_max'][index] = phase_max
+
+        try:
+            magnitude_min = min(x for x in self.__axes['magnitude_min'] if not isnan(x) and not isinf(x))
+            magnitude_max = max(x for x in self.__axes['magnitude_max'] if not isnan(x) and not isinf(x))
+            phase_min = min(x for x in self.__axes['phase_min'] if not isnan(x) and not isinf(x))
+            phase_max = max(x for x in self.__axes['phase_max'] if not isnan(x) and not isinf(x))
+        except ValueError:
+            magnitude_min = 0
+            magnitude_max = 10000
+            phase_min = -90
+            phase_max = 90
+
+        if magnitude_min < 0:
+            magnitude_min = 0
+        if magnitude_max > 10000:
+            magnitude_max = 10000
+        if phase_min < -90:
+            phase_min = -90
+        if phase_max > 90:
+            phase_max = 90
+
+        ticks = [
+            1.0,
+            5.0,
+            7.5,
+            10.0,
+            15.0,
+            20.0,
+            30.0,
+            40.0,
+            50.0,
+            75.0,
+            100.0,
+            150.0,
+            200.0,
+            300.0,
+            400.0,
+            500.0,
+            750.0,
+            1000.0,
+            1500.0,
+            2000.0,
+        ]
+
+        magnitude_ticks = 6
+        for tick in ticks:
+            minimum = floor(magnitude_min / tick) * tick
+            maximum = (ceil(magnitude_max / tick) * tick)
+            magnitude_ticks = (maximum - minimum) / tick + 1
+            if magnitude_ticks < 7:
+                if tick == ticks[0]:
+                    while magnitude_ticks < 4:
+                        minimum -= tick
+                        maximum += tick
+                        magnitude_ticks = (maximum - minimum) / tick + 1
+                magnitude_min = minimum
+                magnitude_max = maximum
+                break
+
+        phase_ticks = 6
+        for tick in ticks:
+            minimum = floor(phase_min / tick) * tick
+            maximum = (ceil(phase_max / tick) * tick)
+            phase_ticks = (maximum - minimum) / tick + 1
+            if phase_ticks < 7:
+                if tick == ticks[0]:
+                    while phase_ticks < 4:
+                        minimum -= tick
+                        maximum += tick
+                        phase_ticks = (maximum - minimum) / tick + 1
+                phase_min = minimum
+                phase_max = maximum
+                break
+
+        for channel in self:
+            channel.update_y_axes(magnitude_min, magnitude_max, magnitude_ticks, phase_min, phase_max, phase_ticks)
+
+    def add_data(self, terminal, time, results):
+        if terminal.is_reference:
+            chart_view = self.channels[terminal.channel].reference_graph
+        else:
+            chart_view = self.channels[terminal.channel].impedance_graph
+
+        chart_view.add_data(time, results)
 
 
 class BoardTab(QTabWidget):  # tab of port tabs
@@ -507,12 +626,7 @@ class BoardTab(QTabWidget):  # tab of port tabs
         #         json.dump(raw_results, log_file)
         #         log_file.write('\n')
 
-        if terminal.is_reference:
-            chart_view = self.port_tabs[terminal.port].channels[terminal.channel].reference_graph
-        else:
-            chart_view = self.port_tabs[terminal.port].channels[terminal.channel].impedance_graph
-
-        chart_view.add_data(time, results)
+        self.port_tabs[terminal.port].add_data(terminal, time, results)
 
         # fig, ax1 = plt.subplots(dpi=40)  # type: (plt.Figure, plt.Axes)
         # fig.tight_layout()
@@ -552,44 +666,6 @@ class BoardTab(QTabWidget):  # tab of port tabs
 class BoardTabManager(QTabWidget):
     sig_show_all_labels = pyqtSignal(name='show_all_labels')
 
-    # make 'No Data' graph
-    # def __init__(self):
-    #     super().__init__()
-    #
-    #     frequencies = range(1000, 100000)
-    #
-    #     fig, ax1 = plt.subplots(dpi=40)  # type: (plt.Figure, plt.Axes)
-    #     fig.tight_layout()
-    #     fig.set_size_inches(5, 3)
-    #
-    #     ax1.set_xlabel('Frequency (Hz)')
-    #     # Make the y-axis label, ticks and tick labels match the line color.
-    #     ax1.set_ylabel('Magnitude (Ω)', color='b')
-    #     ax1.tick_params('y', colors='b')
-    #     ax1.set_ylim(0, 10000)
-    #     ax1.set_xlim(min(frequencies), max(frequencies))
-    #     ax1.set_xscale('log')
-    #
-    #     ax2 = ax1.twinx()
-    #     ax2.set_ylabel('phase (degrees)', color='r')
-    #     ax2.tick_params('y', colors='r')
-    #     ax2.set_ylim(-90, 90)
-    #     ax2.set_yticks([-90, -60, -30, 0, 30, 60, 90])
-    #
-    #    fig.text(
-    #        0.5,
-    #        0.5,
-    #        'No data',
-    #        horizontalalignment='center',
-    #        verticalalignment='center',
-    #        transform=ax1.transAxes,
-    #        fontsize=30
-    #    )
-    #     filename = ROOT_DIR + 'no_data.svg'
-    #     fig.savefig(filename, bbox_inches='tight', transparent=True, dpi=40)
-    #     plt.close(fig)
-
-    # add/remove tabs according to the list of Boards provided
     def update_tabs(self, boards):
         for i in range(self.count() - 1, -1, -1):
             if self.widget(i).board().address() not in [board.address() for board in boards]:
@@ -1088,8 +1164,6 @@ def set_controls(started=None):
         log_group.change_button,
         log_group.magnitude_combo,
         log_group.phase_combo,
-        # REVERT: detect_boards_button
-        # detect_boards_button,
     ]
 
     # disable all port tabs, unmute enabled tabs and channels
@@ -1477,7 +1551,6 @@ class BoardDetector:
 
 
 # restore
-# noinspection PyUnreachableCode
 def load_config(_board_tab_detector):
     data = {}
     try:
@@ -1506,15 +1579,11 @@ def load_config(_board_tab_detector):
         log_group.magnitude_combo.setCurrentIndex(data.get('log_group.magnitude_combo', -1)),
         log_group.phase_combo.setCurrentIndex(data.get('log_group.phase_combo', -1)),
     except ValueError:
-        # TODO: remove raise
-        raise
         save_config()
         load_config(_board_tab_detector)
         return
 
     validate()
-    # REVERT: detect_boards()
-    # detect_boards()
     _board_tab_detector.start()
 
     for board_tab in board_tab_manager:  # type: BoardTab
@@ -1621,8 +1690,6 @@ sweep_group = SweepGroup()
 schedule_group = ScheduleGroup()
 log_group = LogGroup()
 x_axis_group = XAxisGroup()
-# REVERT: detect_boards()
-# detect_boards_button = QPushButton('Detect Boards')
 start_stop_button = StartStopButton()
 
 sweep_group.log_checkbox.stateChanged.connect(validate)
@@ -1655,8 +1722,6 @@ log_group.directory_field.textChanged.connect(validate)
 x_axis_group.frequency_radio.toggled.connect(validate)
 
 start_stop_button.clicked.connect(start)
-# REVERT: detect_boards()
-# detect_boards_button.clicked.connect(detect_boards)
 log_group.change_button.clicked.connect(change_log_directory)
 
 settings_layout = QVBoxLayout()
@@ -1665,8 +1730,6 @@ settings_layout.addWidget(sweep_group)
 # noinspection PyArgumentList
 settings_layout.addWidget(schedule_group)
 settings_layout.addWidget(log_group)
-# REVERT: detect_boards_button
-# settings_layout.addWidget(detect_boards_button)
 settings_layout.addWidget(x_axis_group)
 settings_layout.addWidget(FluidicsGroup(window))
 # noinspection PyArgumentList
