@@ -228,6 +228,7 @@ class Board:
             # if self.__board_address == 7:
             #     return self._select_legacy(terminal)
 
+            legacy = False
             self.__selected = None
 
             print('Selecting {0} terminal on port {1} on channel {2}'.format(
@@ -259,6 +260,7 @@ class Board:
                 try:
                     self.__bus.i2c_rdwr(i2c_msg.write(0x46, [data if 1 <= terminal.channel <= 4 else 0b00000000]))
                     self.__bus.i2c_rdwr(i2c_msg.write(0x47, [data if 5 <= terminal.channel <= 8 else 0b00000000]))
+                    legacy = True
                 except OSError:
                     raise PortDisconnectedError(121, 'Board {0}, port {1} breakout board is not connected'.format(
                             self.__board_address,
@@ -266,6 +268,7 @@ class Board:
                         ))
 
             self.__selected = terminal
+            return legacy
 
         def selected(self):
             return self.__selected
@@ -457,24 +460,42 @@ class Board:
 
     # do a sweep to calibrate the 1x range
     def calibrate_1x_sweep(self, port: Mux.Port):
-        cal_resistors = {
-            100: port.channel1.impedance,
-            220: port.channel1.reference,
-            499: port.channel2.impedance
-        }
+        legacy = self.mux.select(port.channel1.impedance)
+        if legacy:
+            cal_resistors = {
+                100: port.channel1.impedance,
+                220: port.channel1.reference,
+                499: port.channel2.impedance
+            }
+        else:
+            cal_resistors = {
+                100: port.channel1.impedance,
+                220: port.channel2.impedance,
+                499: port.channel3.impedance
+            }
 
         self._ad5933.set_pga_multiplier(False)
         return self._calibrate_sweep(cal_resistors)
 
     # do a sweep to calibrate the 5x range
     def calibrate_5x_sweep(self, port: Mux.Port):
-        cal_resistors = {
-            499: port.channel2.impedance,
-            1000: port.channel2.reference,
-            3300: port.channel3.impedance,
-            6800: port.channel3.reference,
-            10000: port.channel4.impedance
-        }
+        legacy = self.mux.select(port.channel1.impedance)
+        if legacy:
+            cal_resistors = {
+                499: port.channel2.impedance,
+                1000: port.channel2.reference,
+                3300: port.channel3.impedance,
+                6800: port.channel3.reference,
+                10000: port.channel4.impedance
+            }
+        else:
+            cal_resistors = {
+                499: port.channel3.impedance,
+                1000: port.channel4.impedance,
+                3300: port.channel5.impedance,
+                6800: port.channel6.impedance,
+                10000: port.channel7.impedance
+            }
 
         self._ad5933.set_pga_multiplier(True)
         return self._calibrate_sweep(cal_resistors)
@@ -594,7 +615,7 @@ class Board:
 
     # perform a sweep
     def sweep(self, start, increment, steps, repeats=10):
-        assert(1000 <= start <= 100000 and increment >= 0 and 0 <= steps <= 511)
+        assert 1000 <= start <= 100000 and increment >= 0 and 0 <= steps <= 511
 
         # store function entry time
         then = datetime.now()
@@ -621,7 +642,9 @@ class Board:
 
     # underlying sweep code
     def sweep_raw(self, start, increment, steps, repeats):
-        assert(1000 <= start <= 100000 and increment >= 0 and 0 <= steps <= 511)
+        assert 1000 <= start <= 100000 and increment >= 0 and 0 <= steps <= 511
+        self.reset_ad5933()
+        sleep(1)
         self.reset_ad5933()
 
         # REVERT: used for debug
@@ -659,7 +682,7 @@ class Board:
         # internal clock source
         if (start + (increment * steps)) > ext_limit:
             # start the sweep, get first measurement
-            with self.MutexLocker(self.__mutex, self.select): # lock i2c bus
+            with self.MutexLocker(self.__mutex, self.select):  # lock i2c bus
                 self._ad5933.set_external_oscillator(False)
                 self._ad5933.set_start_increment_steps(int_start, increment, int_steps)
                 self._ad5933.start_output()
@@ -698,6 +721,16 @@ class Board:
 
         # 2D linear interpolation to get 1x range gain factors
         # noinspection PyTypeChecker
+        print('self.interp_1x.fs', self.interp_1x.fs)
+        print()
+        print('self.interp_1x.ms', self.interp_1x.ms)
+        print()
+        print('self.interp_1x.gfs', self.interp_1x.gfs)
+        print()
+        print('frequencies', frequencies)
+        print()
+        print('magnitudes_1x', magnitudes_1x)
+        print()
         gfs_1x = griddata((self.interp_1x.fs, self.interp_1x.ms), self.interp_1x.gfs, (frequencies, magnitudes_1x))
 
         # 2D nearest neighbour interpolation to get 1x range gain factors for moduli that lie outside impedance limits

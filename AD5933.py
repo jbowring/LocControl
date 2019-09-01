@@ -64,7 +64,7 @@ class AD5933:
     num_steps = Register(0x88, 2)
     settle_cycles = Register(0x8a, 2)
     status = Register(0x8f, 1)
-    temp_data = Register(0x92, 2) # temperature data
+    temperature_data = Register(0x92, 2)
     real_data = Register(0x94, 2)
     imag_data = Register(0x96, 2)
 

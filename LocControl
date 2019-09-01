@@ -1,0 +1,31 @@
+#!/bin/sh
+DIR=/home/pi/LocControl
+SCRIPT="$DIR/LocControl.py"
+LOG="$DIR/console.log"
+LOCKDIR="/tmp/LocControl/"
+
+if ! mkdir "$LOCKDIR"; then
+    echo "PID $$: could not create lock dir" >> $LOG
+    exit 1
+fi
+
+cleanup () {
+    if [ -d "$LOCKDIR" ] && ! rmdir "$LOCKDIR"; then
+        echo "PID $$: could not remove lock dir" >> $LOG
+    fi
+    exit 0
+}
+
+run_script () {
+    date
+    echo "PID: $$"
+    /usr/bin/python3.5 -u "$SCRIPT" $1
+    return $?
+} > $LOG 2>&1
+
+trap "cleanup" INT TERM HUP EXIT
+run_script
+while [ $? -ne 0 ]; do
+    cp "$LOG" "$DIR/crash_$(date '+%Y-%m-%d_%H:%M:%S').log"
+    run_script -autostart
+done

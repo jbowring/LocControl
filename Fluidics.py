@@ -29,7 +29,7 @@ class FluidicsGroup(QGroupBox):
         self.setLayout(layout)
 
         self.__port = '/dev/ttyACM0'
-        self.__stop(ignore_error=True)
+        self.__stop(just_ui=True)
 
     def __start(self):
         command = '000{0}{1}\n'.format(self.__direction_combo.currentData(), self.__flow_rate_combo.currentData())
@@ -47,8 +47,8 @@ class FluidicsGroup(QGroupBox):
             self.__button.setStyleSheet('background-color: red')
             self.__button.clicked.connect(self.__stop)
 
-    def __stop(self, ignore_error=False):
-        if self.__send_command('00010\n', ignore_error):
+    def __stop(self, just_ui=False):
+        if just_ui or self.__send_command('00010\n'):
             try:
                 self.__button.clicked.disconnect()
             except TypeError:  # no connected listeners

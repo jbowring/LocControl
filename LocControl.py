@@ -7,7 +7,7 @@ from math import log10, floor, ceil, isnan, isinf
 from time import sleep
 
 from PyQt5.QtChart import QChart, QLineSeries, QChartView, QLogValueAxis, QValueAxis, QDateTimeAxis
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer, QDateTime
+from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer, QPointF
 from PyQt5.QtGui import QIntValidator, QPainter, QColor
 from PyQt5.QtWidgets import QApplication, QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QVBoxLayout, \
     QLabel, QLineEdit, QPushButton, QTabWidget, QWidget, QFormLayout, QMessageBox, QFileDialog, QRadioButton
@@ -23,7 +23,6 @@ class TerminalLabel(QLabel):  # label above graphs
         super().__init__(*__args)
         self.sizePolicy().setRetainSizeWhenHidden(True)
         self.setAlignment(Qt.AlignHCenter)
-        board_tab_manager.sig_show_all_labels.connect(self.show)  # connect signal handler to stop being hidden
 
     def toggle_visibility(self):
         self.setVisible(self.isHidden())
@@ -160,6 +159,8 @@ class ChartView(QChartView):
         self.chart.setTitle(title)
         self.magnitude_series.clear()
         self.phase_series.clear()
+        self.m_axis.setLabelsVisible(False)
+        self.p_axis.setLabelsVisible(False)
         self.axes_update_signal.emit(float('NaN'), float('NaN'), float('NaN'), float('NaN'))
 
     def __refresh_data(self, clear=True):
@@ -167,6 +168,8 @@ class ChartView(QChartView):
         magnitude_maximum = float('-inf')
         phase_minimum = float('+inf')
         phase_maximum = float('-inf')
+        self.m_axis.setLabelsVisible(True)
+        self.p_axis.setLabelsVisible(True)
         if x_axis_group.frequency_radio.isChecked():
             if len(self.data) == 0:
                 self.__clear('NO DATA')
@@ -190,72 +193,24 @@ class ChartView(QChartView):
                 else:
                     self.__clear('DISCONNECTED')
         else:
-            try:
-                self.__magnitude_frequency = log_group.magnitude_combo.currentData()
-            except ValueError:
-                self.__magnitude_frequency = None
+            self.__magnitude_frequency = log_group.magnitude_combo.currentData()
+            self.__phase_frequency = log_group.phase_combo.currentData()
 
-            try:
-                self.__phase_frequency = log_group.phase_combo.currentData()
-            except ValueError:
-                self.__phase_frequency = None
-
-            
-            times = list(sorted(time for time in self.data.keys() if
-                                self.__magnitude_frequency in self.data[time] and
-                                self.__phase_frequency in self.data[time]
-                                )
-                         )
-            
             times = []
             for time in self.data.keys():
                 if self.data[time].keys() & {self.__magnitude_frequency, self.__phase_frequency}:
                     times.append(time)
             times.sort()
 
-            if len(times) == 0 or self.__magnitude_frequency is None or self.__phase_frequency is None:
+            if len(times) == 0:
                 self.__clear('NO DATA')
                 self.t_axis.setLabelsVisible(False)
             else:
                 self.chart.setTitle('')
                 self.t_axis.setLabelsVisible(True)
 
-                if times[-1] - times[0] < timedelta(days=1):
-                    self.t_axis.setFormat('hh:mm')
-                    self.t_axis.setTitleText('Time (hh:mm UTC)')
-                    if times[-1] - times[0] < timedelta(minutes=5):
-                        period = timedelta(minutes=1)
-                    elif times[-1] - times[0] < timedelta(minutes=10):
-                        period = timedelta(minutes=2)
-                    elif times[-1] - times[0] < timedelta(hours=1):
-                        period = timedelta(minutes=10)
-                    else:
-                        period = timedelta(hours=1)
-                else:
-                    period = timedelta(days=1)
-                    self.t_axis.setFormat('dd')
-                    self.t_axis.setTitleText('Time (day)')
-
-                if len(times) == 1 or clear:
-                    fake_time = times[-1]+timedelta(seconds=(1 if times[-1].second < 30 else -1))
-                    self.data[fake_time] = self.data[times[-1]]
-                    times = list(sorted([times[-1], fake_time]))
-
-                    self.t_axis.setRange(times[0], times[1])
-                    self.t_axis.setTickCount(3)
-                else:
-                    axis_start = times[0] - (times[0] - datetime.min) % period
-                    axis_stop = times[-1] + (datetime.min - times[-1]) % period
-
-                    self.t_axis.setTickCount(int((axis_stop - axis_start)/period) + 1)
-                    self.t_axis.setRange(axis_start, axis_stop)
-
-                if clear:
-                    self.magnitude_series.clear()
-                    self.phase_series.clear()
-
                 connected = False
-                for time in times:  # type: datetime
+                for time in times:
                     try:
                         magnitude = self.data[time][self.__magnitude_frequency][0]
                         phase = self.data[time][self.__phase_frequency][1]
@@ -268,9 +223,6 @@ class ChartView(QChartView):
                         ))
                         continue
 
-                    self.magnitude_series.append(QDateTime(time).toMSecsSinceEpoch(), magnitude)
-                    self.phase_series.append(QDateTime(time).toMSecsSinceEpoch(), phase)
-
                     magnitude_minimum = min(magnitude_minimum, magnitude)
                     magnitude_maximum = max(magnitude_maximum, magnitude)
                     phase_minimum = min(phase_minimum, phase)
@@ -278,6 +230,64 @@ class ChartView(QChartView):
 
                     if magnitude < 10000:
                         connected = True
+
+                # time axis ticks
+                if times[-1] - times[0] < timedelta(hours=6):
+                    self.t_axis.setFormat('hh:mm')
+                    self.t_axis.setTitleText('Time (hh:mm UTC)')
+                    if times[-1] - times[0] < timedelta(minutes=5):
+                        period = timedelta(minutes=1)
+                    elif times[-1] - times[0] < timedelta(minutes=10):
+                        period = timedelta(minutes=2)
+                    elif times[-1] - times[0] < timedelta(hours=1):
+                        period = timedelta(minutes=10)
+                    else:
+                        period = timedelta(hours=1)
+                elif times[-1] - times[0] < timedelta(days=1):
+                    self.t_axis.setFormat('hh')
+                    self.t_axis.setTitleText('Time (hour UTC)')
+                    if times[-1] - times[0] < timedelta(hours=12):
+                        period = timedelta(hours=1)
+                    else:
+                        period = timedelta(hours=2)
+                else:
+                    period = timedelta(days=1)
+                    self.t_axis.setFormat('dd')
+                    self.t_axis.setTitleText('Time (day)')
+
+                # if only one time point found, stretch it so it shows on graph
+                if len(times) == 1:
+                    fake_time = times[-1] + timedelta(seconds=(1 if times[-1].second < 30 else -1))
+                    self.data[fake_time] = self.data[times[-1]]
+                    times = list(sorted([times[-1], fake_time]))
+
+                    self.t_axis.setRange(times[0], times[1])
+                    self.t_axis.setTickCount(3)
+                else:
+                    axis_start = times[0] - (times[0] - datetime.min) % period
+                    axis_stop = times[-1] + (datetime.min - times[-1]) % period
+
+                    self.t_axis.setTickCount(int((axis_stop - axis_start) / period) + 1)
+                    self.t_axis.setRange(axis_start, axis_stop)
+
+                    # just append the latest time if the axes aren't being cleared
+                    if not clear:
+                        times = [times[-1]]
+
+                if clear:
+                    self.magnitude_series.clear()
+                    self.phase_series.clear()
+
+                chart_pixel_width = self.chart.plotArea().width()/self.devicePixelRatioF()
+                if len(times) > chart_pixel_width:
+                    times = [times[int(i)] for i in linspace(0, len(times)-1, chart_pixel_width)]
+
+                self.magnitude_series.append(
+                    QPointF(time.timestamp() * 1000, self.data[time][self.__magnitude_frequency][0]) for time in times)
+                self.phase_series.append(QPointF(
+                    time.timestamp() * 1000,
+                    self.data[time][self.__phase_frequency][1]
+                ) for time in times)
 
                 if connected:
                     self.axes_update_signal.emit(magnitude_minimum, magnitude_maximum, phase_minimum, phase_maximum)
@@ -324,6 +334,10 @@ class ChannelWidget(QGroupBox):  # pairs of graphs
         self.toggled.connect(self.reference_graph.setEnabled)
         self.setLayout(layout)
 
+    def show_labels(self):
+        self.impedance_label.show()
+        self.reference_label.show()
+
     def parent_toggled(self, enabled):
         # noinspection PyUnresolvedReferences
         self.toggled.emit(enabled and self.isChecked())
@@ -366,13 +380,16 @@ class PortTab(QGroupBox):  # tab of 16 graphs
             layout.addWidget(self.channels[channel], (channel - 1) // 2, (channel - 1) % 2)
 
         self.setLayout(layout)
-        self.__update_y_axes()
 
     def __iter__(self):  # make iterable, return iterator over my ChannelWidgets
         return iter(self.channels.values())
 
+    def show_channel_labels(self):
+        for channel in self:
+            channel.show_labels()
+
     def __axes_update(self, channel, is_reference, magnitude_min, magnitude_max, phase_min, phase_max):
-        index = (channel-1)*2 + (1 if is_reference else 0)
+        index = (channel - 1) * 2 + (1 if is_reference else 0)
 
         self.__axes['magnitude_min'][index] = magnitude_min
         self.__axes['magnitude_max'][index] = magnitude_max
@@ -478,7 +495,12 @@ class BoardTab(QTabWidget):  # tab of port tabs
     def __iter__(self):  # make iterable, return iterator over my PortTabs
         return iter([self.widget(i) for i in range(self.count())])
 
+    def show_channel_labels(self):
+        for port in self:
+            port.show_channel_labels()
+
     def select(self, terminal):  # select board and terminal WITHOUT MUTEX!
+        self.blink(False)
         self.board().select()
         self.board().mux.select(terminal)
         self.blink(True, terminal)
@@ -492,8 +514,11 @@ class BoardTab(QTabWidget):  # tab of port tabs
 
             if blink:
                 blink_timer.timeout.connect(label.toggle_visibility)
-                if terminal == self.enabled_terminals()[0]:
-                    self.setCurrentIndex(terminal.port - 1)
+                for enabled_terminal in self.enabled_terminals():
+                    if enabled_terminal.port == terminal.port:
+                        if terminal == enabled_terminal:
+                            self.setCurrentIndex(terminal.port - 1)
+                        break
             else:
                 try:
                     blink_timer.timeout.disconnect(label.toggle_visibility)
@@ -511,6 +536,9 @@ class BoardTab(QTabWidget):  # tab of port tabs
                             terminals.append(terminal)
         return terminals
 
+    def board(self):
+        return self.__board
+
     # noinspection SpellCheckingInspection,PyUnusedLocal
     def new_data(self, time, terminal, results: dict, raw_results: dict = None):
         self.blink(False, terminal)
@@ -525,7 +553,7 @@ class BoardTab(QTabWidget):  # tab of port tabs
         #     frequencies.append(frequency)
         #     impedances.append(impedance)
         #     phases.append(phase)
-
+        #
         # print('Got {0} samples from board {1} port {2} channel {3} terminal {4}'.format(
         #     len(results),
         #     self.__board.address(),
@@ -533,12 +561,7 @@ class BoardTab(QTabWidget):  # tab of port tabs
         #     terminal.channel,
         #     'reference' if terminal.is_reference else 'impedance'
         # ))
-
-        # REVERT: 51 samples flag
-        if len(results) != 51:
-            print('DID NOT GET 51 SAMPLES, GOT {0}'.format(len(results)), file=sys.stderr)
-
-        # REVERT: result printing
+        #
         # print('f = ', end='')
         # print(frequencies, end=';\n')
         # print('i = ', end='')
@@ -551,6 +574,8 @@ class BoardTab(QTabWidget):  # tab of port tabs
         # print(imag, end=';\n')
         # print('m = ', end='')
         # print(magnitudes, end=';\n')
+
+        then = datetime.utcnow()
 
         log_filename = '/board{0}_port{1}_channel{2}_{3}'.format(
             self.board().address(),
@@ -575,11 +600,11 @@ class BoardTab(QTabWidget):  # tab of port tabs
         with open(log_file_path, 'a+') as log_file:
             for frequency, (impedance, phase) in sorted(results.items()):
                 log_file.write('{0}\t{1: <8g}\t{2: <8g}\t{3:+g}\n'.format(
-                        time.strftime('%Y-%m-%d %H:%M'),
-                        frequency,
-                        float('{:.4g}'.format(impedance)),
-                        phase,
-                    ))
+                    time.strftime('%Y-%m-%d %H:%M'),
+                    frequency,
+                    float('{:.4g}'.format(impedance)),
+                    phase,
+                ))
             log_file.write('\n')
 
         log_directory += '/Single Frequency'
@@ -599,17 +624,17 @@ class BoardTab(QTabWidget):  # tab of port tabs
         try:
             with open(log_file_path, 'a+') as log_file:
                 log_file.write('{0}\t{1: <8g}\t{2: <8g}\t{3: <8g}\t{4:+g}\n'.format(
-                        time.strftime('%Y-%m-%d %H:%M'),
-                        log_group.magnitude_combo.currentData(),
-                        float('{:.4g}'.format(results[log_group.magnitude_combo.currentData()][0])),
-                        log_group.phase_combo.currentData(),
-                        results[log_group.phase_combo.currentData()][1]
-                    ))
+                    time.strftime('%Y-%m-%d %H:%M'),
+                    log_group.magnitude_combo.currentData(),
+                    float('{:.4g}'.format(results[log_group.magnitude_combo.currentData()][0])),
+                    log_group.phase_combo.currentData(),
+                    results[log_group.phase_combo.currentData()][1]
+                ))
         except KeyError:
             print('Failed to find data at frequency {0} or {1}'.format(
-                    log_group.magnitude_combo.currentData(),
-                    log_group.phase_combo.currentData()
-                ),
+                log_group.magnitude_combo.currentData(),
+                log_group.phase_combo.currentData()
+            ),
                 file=sys.stderr
             )
 
@@ -628,43 +653,12 @@ class BoardTab(QTabWidget):  # tab of port tabs
 
         self.port_tabs[terminal.port].add_data(terminal, time, results)
 
-        # fig, ax1 = plt.subplots(dpi=40)  # type: (plt.Figure, plt.Axes)
-        # fig.tight_layout()
-        # fig.set_size_inches(5, 3)
-        #
-        # ax1.plot(frequencies, impedances, 'b-')
-        # ax1.set_xlabel('Frequency (Hz)')
-        # # Make the y-axis label, ticks and tick labels match the line color.
-        # ax1.set_ylabel('Magnitude (Ω)', color='b')
-        # ax1.tick_params('y', colors='b')
-        # ax1.set_ylim(0, 10000)
-        # ax1.set_xlim(min(frequencies), max(frequencies))
-        # ax1.set_xscale('log')
-        #
-        # ax2 = ax1.twinx()
-        # ax2.plot(frequencies, phases, 'r-')
-        # ax2.set_ylabel('phase (degrees)', color='r')
-        # ax2.tick_params('y', colors='r')
-        # ax2.set_ylim(-90, 90)
-        # ax2.set_yticks([-90, -60, -30, 0, 30, 60, 90])
-        # filename = ROOT_DIR + '{0}_{1}_{2}_{3}.svg'.format(
-        #     self.__board.address(), terminal.port, terminal.channel, 'r' if terminal.is_reference else 'i'
-        # )
-        # fig.savefig(filename, bbox_inches='tight', transparent=True, dpi=40)
-        # plt.close(fig)
-        #
-        # if terminal.is_reference:
-        #     self.port_tabs[terminal.port].channels[terminal.channel].reference_graph.load(filename)
-        # else:
-        #     self.port_tabs[terminal.port].channels[terminal.channel].impedance_graph.load(filename)
-
-    def board(self):
-        return self.__board
-
 
 # noinspection SpellCheckingInspection
 class BoardTabManager(QTabWidget):
-    sig_show_all_labels = pyqtSignal(name='show_all_labels')
+    def show_channel_labels(self):
+        for board in self:
+            board.show_channel_labels()
 
     def update_tabs(self, boards):
         for i in range(self.count() - 1, -1, -1):
@@ -1204,6 +1198,10 @@ def set_controls(started=None):
 
 # start button handler
 def start():
+    # disable start button for now
+    start_stop_button.clicked.disconnect()
+
+    autostart_timer.stop()
     # save setup
     save_config()
     # check connections
@@ -1212,13 +1210,10 @@ def start():
     if len(errors) > 0:
         # noinspection PyArgumentList,PyCallByClass
         QMessageBox.critical(window, 'Connection Error', errors)
+        start_stop_button.clicked.connect(start)
     elif validate():
         board_detector.stop()
         set_controls(True)
-
-        # disable start button for now
-        # noinspection PyUnresolvedReferences
-        start_stop_button.clicked.disconnect()
 
         sweeps = int(schedule_group.stop_field.text()) if schedule_group.stop_checkbox.isChecked() else None
 
@@ -1247,12 +1242,24 @@ def start():
 def stop():
     # disable stop button for now
     # noinspection PyUnresolvedReferences
-    start_stop_button.clicked.disconnect()
+    try:
+        start_stop_button.clicked.disconnect()
+    except TypeError:  # no connected listeners
+        pass
 
     set_controls(None)
 
     # disconnect the time or else it keeps interfering
-    scheduler_thread.sig_update_timer.disconnect(update_timer)
+    try:
+        scheduler_thread.sig_update_timer.disconnect()
+    except TypeError:  # no connected listeners
+        pass
+
+    if scheduler_thread.isRunning():
+        scheduler_thread.finished.connect(stop)
+        scheduler_thread.quit()
+        return
+
     # ask the SchedulerThread to stop
     scheduler_thread.quit()
     # stop all labels blinking
@@ -1260,7 +1267,7 @@ def stop():
         blink_timer.disconnect()
     except TypeError:  # no connected listeners
         pass
-    board_tab_manager.sig_show_all_labels.emit()
+    board_tab_manager.show_channel_labels()
 
     validate()
     # re-enable stop button and change function to start
@@ -1296,7 +1303,7 @@ class SchedulerThread(QThread):
             # check time and update timer 10 times per second
             while next_time - datetime.utcnow() > timedelta() and not self.quit_now:
                 self.sig_update_timer.emit(next_time - datetime.utcnow())
-                sleep(0.1)
+                sleep(0.5)
             next_time += self.__period
 
             # make sure MuxThread is finished
@@ -1322,7 +1329,6 @@ class SchedulerThread(QThread):
         self.quit_now = True
         # pass request down
         self.__mux_thread.quit()
-        self.wait()
 
 
 # thread for synchronising terminal changes between boards
@@ -1344,18 +1350,18 @@ class MuxThread(QThread):
                     while True:
                         try:
                             self.sweep_threads[i].select_next_terminal()
-                            break
                         except PortDisconnectedError as error:
-                            self.sweep_threads[i].tab.blink(False)
+                            self.sweep_threads[i].stop_blinking()
                             self.sig_error.emit(error.strerror)
+                        else:
+                            break
                 except StopIteration:  # run out of enabled terminals
-                    self.sweep_threads[i].tab.blink(False)
+                    self.sweep_threads[i].stop_blinking()
                     del self.sweep_threads[i]
                 except IOError:  # can't connect to board
-                    self.sweep_threads[i].tab.blink(False)
+                    self.sweep_threads[i].stop_blinking()
                     self.sig_error.emit('Board {0} IO failure'.format(self.sweep_threads[i].tab.board().address()))
                     del self.sweep_threads[i]
-
             # start all threads together
             for sweep_thread in self.sweep_threads:
                 sweep_thread.start()
@@ -1371,14 +1377,15 @@ class MuxThread(QThread):
         # pass request down
         for sweep_thread in self.sweep_threads:
             sweep_thread.quit()
-        self.wait()
 
 
 # thread for doing a sweep on a single board
 class SweepThread(QThread):
-    # emit this when a sweep is done
     sig_new_data = pyqtSignal(datetime, Board.Mux.Port.Channel.Terminal, dict, name='new_data')
     sig_error = pyqtSignal(str, name='error')
+    sig_blink_labels = pyqtSignal(bool, name='blink_labels')
+    sig_blink_label = pyqtSignal(bool, Board.Mux.Port.Channel.Terminal, name='blink_label')
+    sig_select = pyqtSignal(Board.Mux.Port.Channel.Terminal, name='select')
 
     def __init__(self, time, start_freq, final_freq, samples, logarithmic, tab: BoardTab, parent=None):
         super().__init__(parent)
@@ -1393,6 +1400,9 @@ class SweepThread(QThread):
         self.tab.board().quit_now = False
         self.sig_new_data.connect(tab.new_data)
         self.sig_error.connect(error_dialog.update_message)
+        self.sig_blink_labels.connect(tab.blink, Qt.BlockingQueuedConnection)
+        self.sig_blink_label.connect(tab.blink, Qt.BlockingQueuedConnection)
+        self.sig_select.connect(tab.select, Qt.BlockingQueuedConnection)
 
     def run(self):
         error_msg = None
@@ -1400,23 +1410,22 @@ class SweepThread(QThread):
         # try to recover once after a failure
         for tries in range(2):
             try:
-                if self.quit_now:
-                    return
-                elif self.logarithmic:  # log sweep
-                    results = {}
-                    for freq in logspace(log10(self.start_freq), log10(self.final_freq), self.samples+1):
-                        results.update(self.tab.board().sweep(freq, 0, 0))
-                    self.sig_new_data.emit(self.time, self.tab.board().mux.selected(), results)
-                else:
-                    self.sig_new_data.emit(
-                        self.time,
-                        self.tab.board().mux.selected(),
-                        self.tab.board().sweep(
+                while not self.quit_now:
+                    if self.logarithmic:
+                        results = {}
+                        for freq in logspace(log10(self.start_freq), log10(self.final_freq), self.samples+1):
+                            results.update(self.tab.board().sweep(freq, 0, 0))
+                    else:
+                        results = self.tab.board().sweep(
                             self.start_freq,
                             (self.final_freq - self.start_freq) / self.samples,
                             self.samples
                         )
-                    )
+                    if len(results) == self.samples+1:
+                        self.sig_new_data.emit(self.time, self.tab.board().mux.selected(), results)
+                        break
+                    else:
+                        print('Got {0} samples instead of {1}!'.format(len(results), self.samples+1))
                 return
             except QuitNow:
                 return
@@ -1429,17 +1438,25 @@ class SweepThread(QThread):
         # show the exception message
         self.sig_error.emit(error_msg)
 
+    def stop_blinking(self):
+        if not self.quit_now:
+            # self.tab.blink(False)
+            self.sig_blink_labels.emit(False)
+
     # get the next enabled terminal from the associated tab and select it
     def select_next_terminal(self):
-        self.tab.blink(False)
-        self.tab.select(next(self.terminals))
+        if not self.quit_now:
+            terminal = next(self.terminals)
+            self.sig_blink_labels.emit(False)
+            self.tab.board().select()
+            self.tab.board().mux.select(terminal)
+            self.sig_blink_label.emit(True, terminal)
 
     # request stop
     def quit(self):
         self.quit_now = True
         # pass request down
         self.tab.board().quit_now = True
-        self.wait()
 
 
 # update countdown timer
@@ -1655,22 +1672,31 @@ class ErrorDialog(QMessageBox):
         self.show()
 
 
+autostart_timer = QTimer()
+autostart_timer.setSingleShot(True)
+
 # user instructions for calibration
 if len(sys.argv) > 1:
-    try:
-        cal_address = int(sys.argv[2])
-    except (ValueError, IndexError):
-        cal_address = None
-
-    if len(sys.argv) == 3 and sys.argv[1] == '-calibrate' and cal_address is not None and 0 <= cal_address <= 7:
-        try:
-            input('Plug calibration breakout board into port 1 and press enter\n')
-        except KeyboardInterrupt:
-            exit()
-        Board(cal_address).calibrate(Board.Mux.port1)
+    if sys.argv[1] == '-autostart':
+        autostart_timer.timeout.connect(start)
     else:
-        print('Usage: LocControl.py [-calibrate <board_address>]')
-    exit()
+        try:
+            cal_address = int(sys.argv[2])
+        except (ValueError, IndexError):
+            cal_address = None
+
+        if len(sys.argv) == 3 and sys.argv[1] == '-calibrate' and cal_address is not None and 0 <= cal_address <= 7:
+            try:
+                input('Plug calibration breakout board into port 1 and press enter\n')
+            except KeyboardInterrupt:
+                exit()
+            Board(cal_address).calibrate(Board.Mux.port1)
+        else:
+            print('Usage: LocControl.py [-autostart] or [-calibrate <board_address>]')
+        exit()
+
+# for key, value in os.environ.items():
+#     print('{0}={1}'.format(key, value))
 
 # make Qt application, set mouse cursor to waiting symbol and set the UI style
 app = QApplication([])
@@ -1765,5 +1791,7 @@ app.processEvents()
 app.restoreOverrideCursor()
 board_detector = BoardDetector(board_tab_manager)
 load_config(board_detector)
+
+autostart_timer.start(10000)
 
 exit(app.exec_())
