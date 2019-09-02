@@ -1207,35 +1207,36 @@ def start():
     # check connections
     errors = '\n'.join(board_tab_manager.test_connection())
 
-    if len(errors) > 0:
-        # noinspection PyArgumentList,PyCallByClass
-        QMessageBox.critical(window, 'Connection Error', errors)
+    if len(errors) > 0 or not validate():
+        if len(errors) > 0:
+            QMessageBox.critical(window, 'Connection Error', errors)
         start_stop_button.clicked.connect(start)
-    elif validate():
-        board_detector.stop()
-        set_controls(True)
+        return
 
-        sweeps = int(schedule_group.stop_field.text()) if schedule_group.stop_checkbox.isChecked() else None
+    board_detector.stop()
+    set_controls(True)
 
-        # configure SchedulerThread
-        global scheduler_thread
-        scheduler_thread = SchedulerThread(
-            int(sweep_group.start_field.text()),
-            int(sweep_group.final_field.text()),
-            int(sweep_group.samples_field.text()),
-            sweep_group.log_checkbox.isChecked(),
-            schedule_group.interval,
-            schedule_group.start,
-            sweeps,
-            board_tab_manager.tab_list()
-        )
+    sweeps = int(schedule_group.stop_field.text()) if schedule_group.stop_checkbox.isChecked() else None
 
-        # connect signals for timer and stopping
-        scheduler_thread.sig_update_timer.connect(update_timer)
-        scheduler_thread.sig_done.connect(stop)
-        scheduler_thread.start()
-        # re-enable start button, change function to stop
-        start_stop_button.clicked.connect(stop)
+    # configure SchedulerThread
+    global scheduler_thread
+    scheduler_thread = SchedulerThread(
+        int(sweep_group.start_field.text()),
+        int(sweep_group.final_field.text()),
+        int(sweep_group.samples_field.text()),
+        sweep_group.log_checkbox.isChecked(),
+        schedule_group.interval,
+        schedule_group.start,
+        sweeps,
+        board_tab_manager.tab_list()
+    )
+
+    # connect signals for timer and stopping
+    scheduler_thread.sig_update_timer.connect(update_timer)
+    scheduler_thread.sig_done.connect(stop)
+    scheduler_thread.start()
+    # re-enable start button, change function to stop
+    start_stop_button.clicked.connect(stop)
 
 
 # stop button handler
