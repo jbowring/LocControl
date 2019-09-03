@@ -9,8 +9,9 @@ from time import sleep
 from PyQt5.QtChart import QChart, QLineSeries, QChartView, QLogValueAxis, QValueAxis, QDateTimeAxis
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer, QPointF
 from PyQt5.QtGui import QIntValidator, QPainter, QColor
-from PyQt5.QtWidgets import QApplication, QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QVBoxLayout, \
-    QLabel, QLineEdit, QPushButton, QTabWidget, QWidget, QFormLayout, QMessageBox, QFileDialog, QRadioButton
+from PyQt5.QtWidgets import QApplication, QCheckBox, QStackedWidget, QGridLayout, QMessageBox, QGroupBox, QRadioButton,\
+    QLabel, QLineEdit, QPushButton, QTabWidget, QWidget, QFormLayout, QFileDialog, QComboBox, QHBoxLayout, QVBoxLayout
+import moosegesture
 from numpy import logspace, linspace
 
 from Board import Board, QuitNow, PortDisconnectedError
@@ -74,10 +75,10 @@ class ChartView(QChartView):
         self.m_axis.setTitleText('Magnitude (Ω)')
 
         self.p_axis = QValueAxis()
-        self.p_axis.setTitleText('Phase (°)')
+        self.p_axis.setTitleText('Phase (deg)')
 
         axes_title_font = self.f_axis.titleFont()
-        axes_title_font.setPointSize(8)
+        axes_title_font.setPointSize(7.9)
         axes_title_font.setBold(True)
         self.f_axis.setTitleFont(axes_title_font)
         self.t_axis.setTitleFont(axes_title_font)
@@ -357,9 +358,71 @@ class ChannelWidget(QGroupBox):  # pairs of graphs
         )
 
 
+class SmallScreenGraph(QWidget):
+    __graph = None
+
+    def paintEvent(self, a0) -> None:
+        if self.__graph is None:
+            super().paintEvent(a0)
+        else:
+            # noinspection PyTypeChecker
+            painter = QPainter(self)
+            self.__graph.render(painter)
+
+    def setGraph(self, graph):
+        self.__graph = graph
+        self.repaint()
+
+
+class SmallScreenWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.graph = SmallScreenGraph()
+        self.swipe_label = QLabel('swipe ↕ to change port, ↔ to change channel')
+        self.timer_label = QLabel('Next sweep in 00:00:00')
+        self.terminal_label = QLabel('Name goes here')
+        font = self.swipe_label.font()
+        font.setPointSize(44)
+        self.swipe_label.setFont(font)
+        self.terminal_label.setFont(font)
+        self.timer_label.setFont(font)
+
+        self.swipe_label.setAlignment(Qt.AlignHCenter)
+        self.terminal_label.setAlignment(Qt.AlignHCenter)
+        self.timer_label.setAlignment(Qt.AlignHCenter)
+
+        self.graph.setSizePolicy(self.sizePolicy().Expanding, self.sizePolicy().Expanding)
+        layout = QVBoxLayout()
+        layout.addWidget(self.swipe_label)
+        layout.addWidget(self.timer_label)
+        layout.addWidget(self.terminal_label)
+        layout.addWidget(self.graph)
+        self.setLayout(layout)
+
+        self.__terminal = None
+
+    @property
+    def current_terminal(self):
+        return self.__terminal
+
+    def setGraph(self, graph, board, terminal):
+        self.graph.setGraph(graph)
+        self.terminal_label.setText('BOARD {0} PORT {1} CHANNEL {2} {3}'.format(
+            board,
+            terminal.port,
+            terminal.channel,
+            'REFERENCE' if terminal.is_reference else 'IMPEDANCE'
+        ))
+        self.__terminal = terminal
+
+    def setTimer(self, time):
+        self.timer_label.setText('Next sweep in: ' + time)
+
+
 class PortTab(QGroupBox):  # tab of 16 graphs
     def __init__(self):
         super().__init__('Enabled')
+
         self.setCheckable(True)
         layout = QGridLayout()
 
@@ -481,19 +544,31 @@ class PortTab(QGroupBox):  # tab of 16 graphs
         chart_view.add_data(time, results)
 
 
-class BoardTab(QTabWidget):  # tab of port tabs
-    def __init__(self, board: Board, parent=None):
+class BoardTab(QStackedWidget):  # tab of port tabs
+    def __init__(self, board: Board, small_screen, parent=None):
         super().__init__(parent)
         self.__board = board
+        self.__tab_widget = QTabWidget(parent)
 
         # store my PortTabs
         self.port_tabs = {}
         for port in range(1, 5):
             self.port_tabs[port] = PortTab()
-            self.addTab(self.port_tabs[port], 'Port {0}'.format(port))
+            self.__tab_widget.addTab(self.port_tabs[port], 'Port {0}'.format(port))
+
+        self.ss_widget = SmallScreenWidget()
+        self.__small_screen = False
+        schedule_group.sig_timer_updated.connect(self.ss_widget.setTimer)
+
+        self.addWidget(self.__tab_widget)
+        self.addWidget(self.ss_widget)
+
+        self.__swipe_points = None
+
+        self.set_small_screen(small_screen)
 
     def __iter__(self):  # make iterable, return iterator over my PortTabs
-        return iter([self.widget(i) for i in range(self.count())])
+        return iter([self.__tab_widget.widget(i) for i in range(self.count())])
 
     def show_channel_labels(self):
         for port in self:
@@ -517,7 +592,7 @@ class BoardTab(QTabWidget):  # tab of port tabs
                 for enabled_terminal in self.enabled_terminals():
                     if enabled_terminal.port == terminal.port:
                         if terminal == enabled_terminal:
-                            self.setCurrentIndex(terminal.port - 1)
+                            self.show_terminal(terminal)
                         break
             else:
                 try:
@@ -525,6 +600,60 @@ class BoardTab(QTabWidget):  # tab of port tabs
                 except TypeError:
                     pass
                 label.show()
+
+    # def event(self, e):
+    #     if e.type() == QEvent.Gesture:
+    #         print(e)
+    #         print(e.gesture())
+    #         print(e.gesture(Qt.SwipeGesture))
+    #         return True
+    #     else:
+    #         return super().event(e)
+
+    def mousePressEvent(self, event) -> None:
+        super().mousePressEvent(event)
+        if event.button() == Qt.LeftButton:
+            self.__swipe_points = []
+
+    def mouseMoveEvent(self, event) -> None:
+        super().mouseMoveEvent(event)
+        if self.__swipe_points is not None:
+            self.__swipe_points.append((event.x(), event.y()))
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.LeftButton and self.__swipe_points is not None:
+            strokes = moosegesture.getGesture(self.__swipe_points)
+            gestures = moosegesture.findClosestMatchingGesture(strokes, ['U', 'D', 'L', 'R'])
+            if gestures is not None and len(gestures) == 1:
+                gesture = gestures[0][0]
+                enabled_terminals = self.enabled_terminals()
+                ports = list({terminal.port for terminal in enabled_terminals})
+                if gesture == 'L':
+                    for terminal_index in range(len(enabled_terminals)):
+                        if enabled_terminals[terminal_index] == self.ss_widget.current_terminal:
+                            self.show_terminal(enabled_terminals[(terminal_index+1) % len(enabled_terminals)])
+                            break
+                elif gesture == 'R':
+                    for terminal_index in range(len(enabled_terminals)):
+                        if enabled_terminals[terminal_index] == self.ss_widget.current_terminal:
+                            self.show_terminal(enabled_terminals[(terminal_index-1) % len(enabled_terminals)])
+                            break
+                elif len(ports) > 1:
+                    current_port_index = 0
+                    for port_index in range(len(ports)):
+                        if ports[port_index] == self.ss_widget.current_terminal.port:
+                            current_port_index = port_index
+
+                    if gesture == 'U':
+                        new_port = ports[(current_port_index+1) % len(ports)]
+                    else:  # gesture == 'D'
+                        new_port = ports[(current_port_index-1) % len(ports)]
+
+                    for terminal in enabled_terminals:
+                        if terminal.port == new_port:
+                            self.show_terminal(terminal)
+                            break
 
     def enabled_terminals(self):  # return list of enabled terminals across all enabled ports
         terminals = []
@@ -574,8 +703,6 @@ class BoardTab(QTabWidget):  # tab of port tabs
         # print(imag, end=';\n')
         # print('m = ', end='')
         # print(magnitudes, end=';\n')
-
-        then = datetime.utcnow()
 
         log_filename = '/board{0}_port{1}_channel{2}_{3}'.format(
             self.board().address(),
@@ -652,10 +779,42 @@ class BoardTab(QTabWidget):  # tab of port tabs
         #         log_file.write('\n')
 
         self.port_tabs[terminal.port].add_data(terminal, time, results)
+        self.show_terminal(terminal)
+
+    def show_terminal(self, terminal):
+        self.__tab_widget.setCurrentIndex(terminal.port-1)
+        if self.__small_screen:
+            self.ss_widget.setGraph(
+                self.port_tabs[terminal.port].channels[terminal.channel].impedance_graph,
+                self.__board.address(),
+                terminal
+            )
+
+    def set_small_screen(self, small_screen):
+        self.__small_screen = small_screen
+        if small_screen:
+            self.show_terminal(Board.Mux.Port.Channel.Terminal(self.__tab_widget.currentIndex()+1, 1, False))
+            self.setCurrentIndex(1)
+        else:
+            self.setCurrentIndex(0)
 
 
 # noinspection SpellCheckingInspection
 class BoardTabManager(QTabWidget):
+    __small_screen = False
+    sig_small_screen = pyqtSignal(bool, name='small_screen')
+
+    def mouseDoubleClickEvent(self, a0) -> None:
+        app.setOverrideCursor(Qt.WaitCursor)
+        self.__small_screen = not self.__small_screen
+        self.sig_small_screen.emit(self.__small_screen)
+        for board_tab in self:
+            board_tab.set_small_screen(self.__small_screen)
+
+        self.setStyleSheet('QTabBar {font-size: 28px} QTabBar::tab {height: 80px}' if self.__small_screen else '')
+
+        app.restoreOverrideCursor()
+
     def show_channel_labels(self):
         for board in self:
             board.show_channel_labels()
@@ -673,7 +832,7 @@ class BoardTabManager(QTabWidget):
                         break
                     elif i == self.count() - 1:
                         i += 1
-                self.insertTab(i, BoardTab(board, parent=self), 'Board {0}'.format(board.address()))
+                self.insertTab(i, BoardTab(board, self.__small_screen, parent=self), 'Board {0}'.format(board.address()))
 
     # return list of all my BoardTabs
     def tab_list(self):
@@ -706,6 +865,8 @@ class BoardTabManager(QTabWidget):
 
 # make 'Schedule' UI
 class ScheduleGroup(QGroupBox):
+    sig_timer_updated = pyqtSignal(str, name='timer_updated')
+
     # noinspection PyTypeChecker,PyTypeChecker,PyTypeChecker
     def __init__(self):
         super().__init__('Schedule')
@@ -758,6 +919,19 @@ class ScheduleGroup(QGroupBox):
 
         self.setLayout(layout)
 
+    # update countdown timer
+    def update_timer(self, time: timedelta):
+        if time is None:
+            schedule_group.next_field.setText('')
+        else:
+            hours, remainder = divmod(time.total_seconds(), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            self.next_field.setText('{:02}:{:02}:{:02}'.format(int(hours), int(minutes), int(seconds)))
+        self.sig_timer_updated.emit(self.next_field.text())
+
+    def set_small_screen(self, small_screen):
+        self.setHidden(small_screen)
+
 
 # make 'Sweep' UI
 class SweepGroup(QGroupBox):
@@ -796,6 +970,9 @@ class SweepGroup(QGroupBox):
         layout.addRow(self.increment_label, self.increment_layout)
 
         self.setLayout(layout)
+
+    def set_small_screen(self, small_screen):
+        self.setHidden(small_screen)
 
 
 # make 'Log' UI
@@ -839,6 +1016,15 @@ class LogGroup(QGroupBox):
                     combo.insertItem(index, values_text[index], values[index])
                 combo.setCurrentIndex(old_index if 0 < old_index < combo.count() else 0)
 
+    def set_small_screen(self, small_screen):
+        self.change_button.setHidden(small_screen)
+        self.magnitude_label.setHidden(small_screen)
+        self.magnitude_combo.setHidden(small_screen)
+        self.phase_label.setHidden(small_screen)
+        self.phase_combo.setHidden(small_screen)
+
+        self.setStyleSheet('font-size: 18pt' if small_screen else '')
+
 
 class XAxisGroup(QGroupBox):
     def __init__(self):
@@ -847,11 +1033,27 @@ class XAxisGroup(QGroupBox):
         self.frequency_radio = QRadioButton('Frequency')
         self.time_radio = QRadioButton('Time')
 
-        layout = QHBoxLayout()
-        layout.addWidget(self.frequency_radio)
-        layout.addWidget(self.time_radio)
+        self.__default_font = self.frequency_radio.font()
+
+        layout = QGridLayout()
+        layout.addWidget(self.frequency_radio, 0, 0)
+        layout.addWidget(self.time_radio, 0, 1)
 
         self.setLayout(layout)
+
+    def set_small_screen(self, small_screen):
+        self.layout().removeWidget(self.time_radio)
+        if small_screen:
+            self.layout().addWidget(self.time_radio, 1, 0)
+            stylesheet = 'QRadioButton {font-size: 24pt} QRadioButton::indicator {width: 25px; height: 25px}'
+            self.frequency_radio.setStyleSheet(stylesheet)
+            self.time_radio.setStyleSheet(stylesheet)
+            self.setStyleSheet('font-size: 18pt')
+        else:
+            self.layout().addWidget(self.time_radio, 0, 1)
+            self.frequency_radio.setStyleSheet('')
+            self.time_radio.setStyleSheet('')
+            self.setStyleSheet('')
 
 
 class StartStopButton(QPushButton):
@@ -869,6 +1071,22 @@ class StartStopButton(QPushButton):
         self.setFont(font)
 
         self.update()
+
+
+def set_small_screen(small_screen):
+    # hide things first to avoid violating window bounds
+    if small_screen:
+        sweep_group.set_small_screen(True)
+        schedule_group.set_small_screen(True)
+
+    log_group.set_small_screen(small_screen)
+    x_axis_group.set_small_screen(small_screen)
+    fluidics_group.set_small_screen(small_screen)
+
+    # show things last to avoid the same
+    if not small_screen:
+        sweep_group.set_small_screen(False)
+        schedule_group.set_small_screen(False)
 
 
 # change log directory button handler
@@ -955,7 +1173,7 @@ def validate_fast():
         schedule_group.start = timedelta()
         schedule_group.start_layout.hide_error()
 
-    update_timer(schedule_group.start)
+    schedule_group.update_timer(schedule_group.start)
 
     # check stop field
     if schedule_group.stop_checkbox.isChecked() and not schedule_group.stop_field.hasAcceptableInput():
@@ -1232,7 +1450,7 @@ def start():
     )
 
     # connect signals for timer and stopping
-    scheduler_thread.sig_update_timer.connect(update_timer)
+    scheduler_thread.sig_update_timer.connect(schedule_group.update_timer)
     scheduler_thread.sig_done.connect(stop)
     scheduler_thread.start()
     # re-enable start button, change function to stop
@@ -1458,16 +1676,6 @@ class SweepThread(QThread):
         self.quit_now = True
         # pass request down
         self.tab.board().quit_now = True
-
-
-# update countdown timer
-def update_timer(time: timedelta):
-    if time is None:
-        schedule_group.next_field.setText('')
-    else:
-        hours, remainder = divmod(time.total_seconds(), 3600)
-        minutes, seconds = divmod(remainder, 60)
-        schedule_group.next_field.setText('{:02}:{:02}:{:02}'.format(int(hours), int(minutes), int(seconds)))
 
 
 class BoardDetector:
@@ -1717,6 +1925,7 @@ sweep_group = SweepGroup()
 schedule_group = ScheduleGroup()
 log_group = LogGroup()
 x_axis_group = XAxisGroup()
+fluidics_group = FluidicsGroup(window)
 start_stop_button = StartStopButton()
 
 sweep_group.log_checkbox.stateChanged.connect(validate)
@@ -1758,7 +1967,7 @@ settings_layout.addWidget(sweep_group)
 settings_layout.addWidget(schedule_group)
 settings_layout.addWidget(log_group)
 settings_layout.addWidget(x_axis_group)
-settings_layout.addWidget(FluidicsGroup(window))
+settings_layout.addWidget(fluidics_group)
 # noinspection PyArgumentList
 settings_layout.addWidget(start_stop_button)
 settings_layout.setContentsMargins(0, 0, 0, 0)
@@ -1770,6 +1979,7 @@ settings.setFixedWidth(250)
 settings.setContentsMargins(0, 0, 0, 0)
 
 board_tab_manager = BoardTabManager()
+board_tab_manager.sig_small_screen.connect(set_small_screen)
 
 window_layout = QHBoxLayout()
 # noinspection PyArgumentList
