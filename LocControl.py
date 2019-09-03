@@ -784,8 +784,9 @@ class BoardTab(QStackedWidget):  # tab of port tabs
     def show_terminal(self, terminal):
         self.__tab_widget.setCurrentIndex(terminal.port-1)
         if self.__small_screen:
+            channel = self.port_tabs[terminal.port].channels[terminal.channel]
             self.ss_widget.setGraph(
-                self.port_tabs[terminal.port].channels[terminal.channel].impedance_graph,
+                channel.reference_graph if terminal.is_reference else channel.impedance_graph,
                 self.__board.address(),
                 terminal
             )
