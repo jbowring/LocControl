@@ -10,12 +10,12 @@ from PyQt5.QtChart import QChart, QLineSeries, QChartView, QLogValueAxis, QValue
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer, QPointF
 from PyQt5.QtGui import QIntValidator, QPainter, QColor
 from PyQt5.QtWidgets import QApplication, QCheckBox, QStackedWidget, QGridLayout, QMessageBox, QGroupBox, QRadioButton,\
-    QLabel, QLineEdit, QPushButton, QTabWidget, QWidget, QFormLayout, QFileDialog, QComboBox, QHBoxLayout, QVBoxLayout
+    QLabel, QLineEdit, QPushButton, QTabWidget, QWidget, QFormLayout, QFileDialog, QHBoxLayout, QVBoxLayout
 import moosegesture
 from numpy import logspace, linspace
 
 from Board import Board, QuitNow, PortDisconnectedError
-from CustomWidgets import QHBoxLayoutWithError
+from CustomWidgets import ComboBox, QHBoxLayoutWithError
 from Fluidics import FluidicsGroup
 
 
@@ -876,7 +876,7 @@ class ScheduleGroup(QGroupBox):
         self.interval_field = QLineEdit()
         self.interval_field.setMaxLength(2)
         self.interval_field.setValidator(QIntValidator(0, 99))
-        self.interval_combobox = QComboBox()
+        self.interval_combobox = ComboBox()
         self.interval_combobox.addItems(['h', 'm', 's'])
         self.interval_layout = QHBoxLayoutWithError(
             self.interval_field,
@@ -889,7 +889,7 @@ class ScheduleGroup(QGroupBox):
         self.delay_field = QLineEdit()
         self.delay_field.setMaxLength(2)
         self.delay_field.setValidator(QIntValidator(0, 99))
-        self.delay_combobox = QComboBox()
+        self.delay_combobox = ComboBox()
         self.delay_combobox.addItems(['h', 'm', 's'])
         self.start_layout = QHBoxLayoutWithError(self.delay_field, self.delay_combobox, error='Range: 0 - 24 hours')
         self.delay_field.setDisabled(True)
@@ -987,9 +987,9 @@ class LogGroup(QGroupBox):
         self.directory_layout = QHBoxLayoutWithError(self.directory_field, self.change_button)
 
         self.magnitude_label = QLabel('Magnitude (Hz):')
-        self.magnitude_combo = QComboBox()
+        self.magnitude_combo = ComboBox()
         self.phase_label = QLabel('Phase (Hz):')
-        self.phase_combo = QComboBox()
+        self.phase_combo = ComboBox()
         self.combo_values = []
 
         frequency_layout = QFormLayout()
@@ -1045,12 +1045,14 @@ class XAxisGroup(QGroupBox):
     def set_small_screen(self, small_screen):
         self.layout().removeWidget(self.time_radio)
         if small_screen:
+            # noinspection PyArgumentList
             self.layout().addWidget(self.time_radio, 1, 0)
             stylesheet = 'QRadioButton {font-size: 24pt} QRadioButton::indicator {width: 25px; height: 25px}'
             self.frequency_radio.setStyleSheet(stylesheet)
             self.time_radio.setStyleSheet(stylesheet)
             self.setStyleSheet('font-size: 18pt')
         else:
+            # noinspection PyArgumentList
             self.layout().addWidget(self.time_radio, 0, 1)
             self.frequency_radio.setStyleSheet('')
             self.time_radio.setStyleSheet('')

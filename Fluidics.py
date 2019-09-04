@@ -1,5 +1,7 @@
 from serial import Serial, SerialException
-from PyQt5.QtWidgets import QGroupBox, QComboBox, QPushButton, QFormLayout, QMessageBox, QLabel, QWIDGETSIZE_MAX, QListView
+from CustomWidgets import ComboBox
+from PyQt5.QtWidgets import QGroupBox, QPushButton, QFormLayout, QMessageBox, QLabel, QListWidget
+from PyQt5.QtCore import QSize, QVariant, Qt
 
 
 class _PumpButton(QPushButton):
@@ -19,11 +21,13 @@ class _PumpButton(QPushButton):
         super().setStyleSheet(style_sheet)
 
 
-class _ComboBox(QComboBox):
+class _ComboBox(ComboBox):
     def __init__(self):
         super().__init__()
         self.__style_dict = {}
-        self.activated.connect(lambda _: self.clearFocus())
+        list_view = QListWidget()
+        self.setModel(list_view.model())
+        self.setView(list_view)
 
     def setStyleSheet(self, _):
         raise NotImplementedError
@@ -116,19 +120,16 @@ class FluidicsGroup(QGroupBox):
             return True
 
     def set_small_screen(self, small_screen):
-        self.setStyleSheet('QGroupBox {font-size: 18pt} QComboBox {font-size: 34pt}' if small_screen else '')
+        self.setStyleSheet('QGroupBox{font-size: 18pt} QComboBox,QListWidget {font-size: 34pt}' if small_screen else '')
         self.__button.setStyleSheetOption('height', '100px' if small_screen else None)
 
-        # self.__flow_rate_combo.setStyleSheetOption('QListView {font-size', '34pt}' if small_screen else None)
-        # self.__direction_combo.setStyleSheetOption('QListView {font-size', '34pt}' if small_screen else None)
-        # self.__flow_rate_combo.setStyleSheetOption('font-size', '34pt' if small_screen else None)
-        # self.__direction_combo.setStyleSheetOption('font-size', '34pt' if small_screen else None)
-        # self.__flow_rate_combo.setStyleSheetOption('height', '100px' if small_screen else None)
-        # self.__direction_combo.setStyleSheetOption('height', '100px' if small_screen else None)
-        # self.__flow_rate_combo.setStyleSheetOption('QListView::item {height', '100px}' if small_screen else None)
-        # self.__direction_combo.setStyleSheetOption('QListView::item {height', '100px}' if small_screen else None)
-        # # self.__flow_rate_combo.setStyleSheetOption('QListView::item {min-height', '300px}' if small_screen else None)
-        # # self.__direction_combo.setStyleSheetOption('QListView::item {min-height', '300px}' if small_screen else None)
+        for combo in [self.__flow_rate_combo, self.__direction_combo]:
+            combo.setStyleSheetOption('height', '100px' if small_screen else None)
+            for i in range(combo.view().count()):
+                if small_screen:
+                    combo.view().item(i).setSizeHint(QSize(combo.view().item(i).sizeHint().width(), 100))
+                else:
+                    combo.view().item(i).setData(Qt.SizeHintRole, QVariant())
 
         self.__flow_rate_label.setHidden(small_screen)
         self.__direction_label.setHidden(small_screen)

@@ -1,6 +1,6 @@
 from PyQt5.QtCore import QSize
 from PyQt5.QtGui import QCursor
-from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QStyle, QToolTip
+from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QStyle, QToolTip, QComboBox
 
 
 class _ErrorLabel(QLabel):
@@ -39,3 +39,10 @@ class QHBoxLayoutWithError(QHBoxLayout):
 
     def hide_error(self, hide=True):
         self.show_error(not hide)
+
+
+class ComboBox(QComboBox):
+    def __init__(self):
+        super().__init__()
+        # noinspection PyUnresolvedReferences
+        self.activated.connect(lambda _: self.clearFocus())
