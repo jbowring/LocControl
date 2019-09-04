@@ -31,6 +31,7 @@ class TerminalLabel(QLabel):  # label above graphs
 
 class ChartView(QChartView):
     axes_update_signal = pyqtSignal(float, float, float, float, name='axes_update')
+    sig_x_axis_updated = pyqtSignal(name='sig_x_axis_updated')
 
     def setEnabled(self, enable):
         super().setEnabled(enable)
@@ -149,6 +150,7 @@ class ChartView(QChartView):
         self.p_axis.setRange(-90, 90)
 
         self.__refresh_data(True)
+        self.sig_x_axis_updated.emit()
 
     def update_y_axes(self, magnitude_min, magnitude_max, magnitude_ticks, phase_min, phase_max, phase_ticks):
         self.m_axis.setRange(magnitude_min, magnitude_max)
@@ -370,7 +372,13 @@ class SmallScreenGraph(QWidget):
             self.__graph.render(painter)
 
     def setGraph(self, graph):
+        if self.__graph is not None:
+            try:
+                self.__graph.sig_x_axis_updated.disconnect(self.repaint)
+            except TypeError:
+                pass
         self.__graph = graph
+        self.__graph.sig_x_axis_updated.connect(self.repaint, Qt.QueuedConnection)
         self.repaint()
 
 
