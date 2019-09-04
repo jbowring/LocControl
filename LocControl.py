@@ -803,18 +803,17 @@ class BoardTab(QStackedWidget):  # tab of port tabs
 # noinspection SpellCheckingInspection
 class BoardTabManager(QTabWidget):
     __small_screen = False
-    sig_small_screen = pyqtSignal(bool, name='small_screen')
+    sig_double_click = pyqtSignal()
 
     def mouseDoubleClickEvent(self, a0) -> None:
-        app.setOverrideCursor(Qt.WaitCursor)
-        self.__small_screen = not self.__small_screen
-        self.sig_small_screen.emit(self.__small_screen)
+        self.sig_double_click.emit()
+
+    def set_small_screen(self, small_screen):
+        self.__small_screen = small_screen
         for board_tab in self:
             board_tab.set_small_screen(self.__small_screen)
 
         self.setStyleSheet('QTabBar {font-size: 28px} QTabBar::tab {height: 80px}' if self.__small_screen else '')
-
-        app.restoreOverrideCursor()
 
     def show_channel_labels(self):
         for board in self:
@@ -833,7 +832,7 @@ class BoardTabManager(QTabWidget):
                         break
                     elif i == self.count() - 1:
                         i += 1
-                self.insertTab(i, BoardTab(board, self.__small_screen, parent=self), 'Board {0}'.format(board.address()))
+                self.insertTab(i, BoardTab(board, self.__small_screen, self), 'Board {0}'.format(board.address()))
 
     # return list of all my BoardTabs
     def tab_list(self):
@@ -1076,20 +1075,38 @@ class StartStopButton(QPushButton):
         self.update()
 
 
-def set_small_screen(small_screen):
-    # hide things first to avoid violating window bounds
-    if small_screen:
-        sweep_group.set_small_screen(True)
-        schedule_group.set_small_screen(True)
+def unset_small_screen():
+    board_tab_manager.sig_double_click.disconnect(unset_small_screen)
+    app.setOverrideCursor(Qt.WaitCursor)
 
-    log_group.set_small_screen(small_screen)
-    x_axis_group.set_small_screen(small_screen)
-    fluidics_group.set_small_screen(small_screen)
+    board_tab_manager.set_small_screen(False)
+    log_group.set_small_screen(False)
+    x_axis_group.set_small_screen(False)
+    fluidics_group.set_small_screen(False)
 
     # show things last to avoid the same
-    if not small_screen:
-        sweep_group.set_small_screen(False)
-        schedule_group.set_small_screen(False)
+    sweep_group.set_small_screen(False)
+    schedule_group.set_small_screen(False)
+
+    app.restoreOverrideCursor()
+    board_tab_manager.sig_double_click.connect(set_small_screen)
+
+
+def set_small_screen():
+    board_tab_manager.sig_double_click.disconnect(set_small_screen)
+    app.setOverrideCursor(Qt.WaitCursor)
+
+    # hide things first to avoid violating window bounds
+    sweep_group.set_small_screen(True)
+    schedule_group.set_small_screen(True)
+
+    board_tab_manager.set_small_screen(True)
+    log_group.set_small_screen(True)
+    x_axis_group.set_small_screen(True)
+    fluidics_group.set_small_screen(True)
+
+    app.restoreOverrideCursor()
+    board_tab_manager.sig_double_click.connect(unset_small_screen)
 
 
 # change log directory button handler
@@ -1982,7 +1999,7 @@ settings.setFixedWidth(250)
 settings.setContentsMargins(0, 0, 0, 0)
 
 board_tab_manager = BoardTabManager()
-board_tab_manager.sig_small_screen.connect(set_small_screen)
+board_tab_manager.sig_double_click.connect(set_small_screen)
 
 window_layout = QHBoxLayout()
 # noinspection PyArgumentList

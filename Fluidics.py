@@ -38,7 +38,6 @@ class _ComboBox(ComboBox):
         for option, style in self.__style_dict.items():
             if style is not None:
                 style_sheet += '{0}: {1}; '.format(option, style)
-        print('setting stylesheet', style_sheet)
         super().setStyleSheet(style_sheet)
 
 

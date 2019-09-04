@@ -2,6 +2,8 @@ from PyQt5.QtCore import QSize
 from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QStyle, QToolTip, QComboBox
 
+__all__ = ['QHBoxLayoutWithError', 'ComboBox']
+
 
 class _ErrorLabel(QLabel):
     def __init__(self, text=''):
