@@ -564,6 +564,8 @@ class BoardTab(QStackedWidget):  # tab of port tabs
         self.addWidget(self.ss_widget)
 
         self.__swipe_points = None
+        self.__gesture_timer = QTimer()
+        self.__gesture_timer.setSingleShot(True)
 
         self.set_small_screen(small_screen)
 
@@ -629,15 +631,16 @@ class BoardTab(QStackedWidget):  # tab of port tabs
                 gesture = gestures[0][0]
                 enabled_terminals = self.enabled_terminals()
                 ports = list({terminal.port for terminal in enabled_terminals})
+                new_terminal = None
                 if gesture == 'L':
                     for terminal_index in range(len(enabled_terminals)):
                         if enabled_terminals[terminal_index] == self.ss_widget.current_terminal:
-                            self.show_terminal(enabled_terminals[(terminal_index+1) % len(enabled_terminals)])
+                            new_terminal = enabled_terminals[(terminal_index+1) % len(enabled_terminals)]
                             break
                 elif gesture == 'R':
                     for terminal_index in range(len(enabled_terminals)):
                         if enabled_terminals[terminal_index] == self.ss_widget.current_terminal:
-                            self.show_terminal(enabled_terminals[(terminal_index-1) % len(enabled_terminals)])
+                            new_terminal = enabled_terminals[(terminal_index-1) % len(enabled_terminals)]
                             break
                 elif len(ports) > 1:
                     current_port_index = 0
@@ -652,8 +655,12 @@ class BoardTab(QStackedWidget):  # tab of port tabs
 
                     for terminal in enabled_terminals:
                         if terminal.port == new_port:
-                            self.show_terminal(terminal)
+                            new_terminal = terminal
                             break
+
+                if new_terminal is not None:
+                    self.show_terminal(new_terminal)
+                    self.__gesture_timer.start(15*1000)
 
     def enabled_terminals(self):  # return list of enabled terminals across all enabled ports
         terminals = []
@@ -779,7 +786,8 @@ class BoardTab(QStackedWidget):  # tab of port tabs
         #         log_file.write('\n')
 
         self.port_tabs[terminal.port].add_data(terminal, time, results)
-        self.show_terminal(terminal)
+        if not self.__small_screen or not self.__gesture_timer.isActive():
+            self.show_terminal(terminal)
 
     def show_terminal(self, terminal):
         self.__tab_widget.setCurrentIndex(terminal.port-1)
