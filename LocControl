@@ -3,6 +3,7 @@ DIR=/home/pi/LocControl
 SCRIPT="$DIR/LocControl.py"
 LOG="$DIR/console.log"
 LOCKDIR="/tmp/LocControl/"
+export LOCCONTROL_RUNNINGDIR="/tmp/LocControl_Running/"
 
 if ! mkdir "$LOCKDIR"; then
     echo "PID $$: could not create lock dir" >> $LOG
@@ -13,10 +14,16 @@ cleanup () {
     if [ -d "$LOCKDIR" ] && ! rmdir "$LOCKDIR"; then
         echo "PID $$: could not remove lock dir" >> $LOG
     fi
+    if [ -d "$LOCCONTROL_RUNNINGDIR" ] && ! rmdir "$LOCCONTROL_RUNNINGDIR"; then
+        echo "PID $$: could not remove running dir" >> $LOG
+    fi
     exit 0
 }
 
 run_script () {
+    if [ -d "$LOCCONTROL_RUNNINGDIR" ] && ! rmdir "$LOCCONTROL_RUNNINGDIR"; then
+        echo "PID $$: could not remove running dir"
+    fi
     date
     echo "PID: $$"
     /usr/bin/python3.5 -u "$SCRIPT" $1
@@ -25,7 +32,14 @@ run_script () {
 
 trap "cleanup" INT TERM HUP EXIT
 run_script
-while [ $? -ne 0 ]; do
+result=$?
+while [ $result -ne 0 ]; do
+    echo "Program exited with code $result, saving crash log." >> $LOG
     cp "$LOG" "$DIR/crash_$(date '+%Y-%m-%d_%H:%M:%S').log"
-    run_script -autostart
+    if [ -d "$LOCCONTROL_RUNNINGDIR" ]; then
+      run_script -autostart
+      result=$?
+    else
+      result=0
+    fi
 done

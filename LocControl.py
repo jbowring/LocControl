@@ -201,7 +201,7 @@ class ChartView(QChartView):
 
             times = []
             for time in self.data.keys():
-                if self.data[time].keys() & {self.__magnitude_frequency, self.__phase_frequency}:
+                if {self.__magnitude_frequency, self.__phase_frequency} <= self.data[time].keys():
                     times.append(time)
             times.sort()
 
@@ -259,6 +259,7 @@ class ChartView(QChartView):
                     self.t_axis.setTitleText('Time (day)')
 
                 # if only one time point found, stretch it so it shows on graph
+                fake_time = None
                 if len(times) == 1:
                     fake_time = times[-1] + timedelta(seconds=(1 if times[-1].second < 30 else -1))
                     self.data[fake_time] = self.data[times[-1]]
@@ -291,6 +292,9 @@ class ChartView(QChartView):
                     time.timestamp() * 1000,
                     self.data[time][self.__phase_frequency][1]
                 ) for time in times)
+
+                if fake_time is not None and fake_time in self.data:
+                    del self.data[fake_time]
 
                 if connected:
                     self.axes_update_signal.emit(magnitude_minimum, magnitude_maximum, phase_minimum, phase_maximum)
@@ -1026,11 +1030,16 @@ class LogGroup(QGroupBox):
                 values_text = [str(int(value)) for value in values]
 
             for combo in [self.magnitude_combo, self.phase_combo]:
+                old_value = combo.currentData()
                 old_index = combo.currentIndex()
                 combo.clear()
                 for index in range(len(values)):
                     combo.insertItem(index, values_text[index], values[index])
-                combo.setCurrentIndex(old_index if 0 < old_index < combo.count() else 0)
+                    if values[index] == old_value:
+                        combo.setCurrentIndex(index)
+                        old_index = None
+                if old_index is not None:
+                    combo.setCurrentIndex(old_index if 0 < old_index < combo.count() else 0)
 
     def set_small_screen(self, small_screen):
         self.change_button.setHidden(small_screen)
@@ -1489,6 +1498,14 @@ def start():
     scheduler_thread.sig_update_timer.connect(schedule_group.update_timer)
     scheduler_thread.sig_done.connect(stop)
     scheduler_thread.start()
+    if 'LOCCONTROL_RUNNINGDIR' in os.environ:
+        try:
+            os.mkdir(os.environ['LOCCONTROL_RUNNINGDIR'])
+        except FileExistsError:
+            pass
+        except OSError as error:
+            print('Error creating running directory:', str(error), file=sys.stderr)
+
     # re-enable start button, change function to stop
     start_stop_button.clicked.connect(stop)
 
@@ -1527,6 +1544,13 @@ def stop():
     validate()
     # re-enable stop button and change function to start
     set_controls(False)
+
+    if 'LOCCONTROL_RUNNINGDIR' in os.environ:
+        try:
+            os.rmdir(os.environ['LOCCONTROL_RUNNINGDIR'])
+        except OSError as error:
+            print('Error deleting running directory:', str(error), file=sys.stderr)
+
     start_stop_button.clicked.connect(start)
     board_detector.start()
 
