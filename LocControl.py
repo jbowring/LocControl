@@ -1864,6 +1864,7 @@ def load_config(_board_tab_detector):
         log_group.populate_combos(data.get('log_group.combo_values', [])),
         log_group.magnitude_combo.setCurrentIndex(data.get('log_group.magnitude_combo', -1)),
         log_group.phase_combo.setCurrentIndex(data.get('log_group.phase_combo', -1)),
+        fluidics_group.set_state_json(data.get('fluidics', {}))
     except ValueError:
         save_config()
         load_config(_board_tab_detector)
@@ -1907,6 +1908,7 @@ def save_config():
         'log_group.combo_values': log_group.combo_values,
         'log_group.magnitude_combo': log_group.magnitude_combo.currentIndex(),
         'log_group.phase_combo': log_group.phase_combo.currentIndex(),
+        'fluidics': fluidics_group.get_state_json(),
     }
 
     for board_tab in board_tab_manager:  # type: BoardTab

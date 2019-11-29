@@ -132,3 +132,12 @@ class FluidicsGroup(QGroupBox):
 
         self.__flow_rate_label.setHidden(small_screen)
         self.__direction_label.setHidden(small_screen)
+
+    def get_state_json(self):
+        return {'flow': self.__flow_rate_combo.currentIndex(), 'direction': self.__direction_combo.currentIndex()}
+
+    def set_state_json(self, state):
+        if 0 <= state.get('flow', -1) < self.__flow_rate_combo.count():
+            self.__flow_rate_combo.setCurrentIndex(state['flow'])
+        if 0 <= state.get('direction', -1) < self.__direction_combo.count():
+            self.__direction_combo.setCurrentIndex(state['direction'])
